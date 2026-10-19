@@ -70,8 +70,21 @@ local function findHead(model)
 	return best
 end
 
+-- Your avatar is `MCBody <yourUserId>`. A plain `MCBody` also exists but it's an
+-- unpositioned template rig (every part sits at 0,0,0) — aiming that does nothing.
 local function localModel()
-	return Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME)
+	local byId = Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
+	if byId and byId:IsA("Model") then
+		return byId
+	end
+	local exact = Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME)
+	if exact and exact:IsA("Model") then
+		local h = findHead(exact)
+		if h and h.Position.Magnitude > 0.01 then
+			return exact
+		end
+	end
+	return byId
 end
 
 local ROOT_NAMES = { "Torso", "Root", "RootPart", "UpperTorso", "HumanoidRootPart", "Body", "Chest" }
@@ -102,7 +115,10 @@ local function isTargetBody(inst)
 	if typeof(inst) ~= "Instance" or not inst:IsA("Model") then
 		return false
 	end
-	if inst.Name == CONFIG.LOCAL_MODEL_NAME then
+	if inst.Name == CONFIG.LOCAL_MODEL_NAME then -- template rig
+		return false
+	end
+	if inst.Name == CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId) then -- you
 		return false
 	end
 	if inst.Name:sub(1, 6) ~= "MCBody" then
@@ -428,6 +444,7 @@ task.spawn(function()
 	local head = findHead(model)
 	print("[Aim][check] own model: " .. (model and model.Name or "NOT FOUND")
 		.. "  head: " .. (head and (head.Name .. " @" .. tostring(head.Position)) or "NOT FOUND"))
+	print("[Aim][check] expected avatar name: " .. CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
 	local names = {}
 	for _, m in ipairs(Workspace:GetChildren()) do
 		if isTargetBody(m) then
