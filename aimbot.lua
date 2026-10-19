@@ -27,11 +27,12 @@ local FEATURES = {
 local VALUES = {
 	cps = 10, -- 1..20
 	range = 60, -- studs
-	reach = 3.2, -- 2.5..4 (server tolerance is 3.3 — above gets flagged)
-	attackDist = 3.4, -- click only when closer than this
+	reach = 3.2, -- blocks (server tolerance is 3.3 — above gets flagged)
+	attackDist = 3.4, -- blocks, click only when closer than this
 	speed = 2.5, -- 1..5 multiplier
 	kbKeep = 0, -- 0..100: % of incoming knockback kept (0 = none)
 	targets = "All", -- All / Players / Bots
+	aimMode = "Instant", -- Instant (silent snap) / Smooth (rate-limited)
 }
 local BINDS = {
 	aura = Enum.KeyCode.F,
@@ -280,9 +281,11 @@ end
 local hookStatus = {}
 
 -- KillAura part 1: silent aim through the Look stream.
--- The game's own loop fires fireLook(handles, realYaw, realPitch) each frame; we
--- rewrite the values toward the target, bounded so the anti-cheat's aim snap
--- budget (35 deg/tick) is never exceeded. Camera/screen stay on the real look.
+-- The game's own loop fires fireLook(handles, realYaw, realPitch) each frame and
+-- the server resolves hits from those values — the camera is drawn from a
+-- separate client-side look state, so rewriting this stream is invisible.
+-- Instant = snap to the target every frame (classic silent rotation);
+-- Smooth = bounded turn (~700 deg/s, stays under the 35 deg/tick snap budget).
 local AIM_MAX_DEG_PER_FRAME = 11 -- ~700 deg/s at 60fps: just under the 35 deg/tick snap budget
 if inputs and type(inputs.fireLook) == "function" and aimAssist then
 	orig.fireLook = inputs.fireLook
@@ -292,13 +295,17 @@ if inputs and type(inputs.fireLook) == "function" and aimAssist then
 			local ey = player:GetAttribute("Y")
 			local ez = player:GetAttribute("Z")
 			if ex then
-				local exs = Vector3.new(ex, ey or 0, ez or 0) * SPB + mapOrigin
+				local exs = Vector3.new(ex, ey + 1.62, ez) * SPB + mapOrigin
 				local cy = targetPos.Y - 0.75 * SPB -- head -> box center
 				local dyaw, dpitch = aimAssist.anglesTo(exs.X, exs.Y, exs.Z, targetPos.X, cy, targetPos.Z)
-				local dY = ((dyaw - yaw + 180) % 360) - 180
-				local dP = math.clamp(dpitch - pitch, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
-				yaw = yaw + math.clamp(dY, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
-				pitch = pitch + dP
+				if VALUES.aimMode == "Smooth" then
+					local dY = ((dyaw - yaw + 180) % 360) - 180
+					local dP = math.clamp(dpitch - pitch, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
+					yaw = yaw + math.clamp(dY, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
+					pitch = pitch + dP
+				else
+					yaw, pitch = dyaw, dpitch
+				end
 			end
 		end
 		return orig.fireLook(handles, yaw, pitch)
@@ -753,6 +760,7 @@ local function buildGui()
 	end, 2.5, 4, 0.1)
 	addSliderRow("AttackDist blk", function() return VALUES.attackDist end, function(v) VALUES.attackDist = v end, 2.5, 4.5, 0.1)
 	addCycleRow("Targets", function() return VALUES.targets end, function(v) VALUES.targets = v end, { "All", "Players", "Bots" })
+	addCycleRow("Aim", function() return VALUES.aimMode end, function(v) VALUES.aimMode = v end, { "Instant", "Smooth" })
 	addToggleRow("Glow target", function() return FEATURES.glow end, function(v) FEATURES.glow = v end)
 	addToggleRow("TargetStrafe", function() return FEATURES.strafe end, function(v)
 		FEATURES.strafe = v
