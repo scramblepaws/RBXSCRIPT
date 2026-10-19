@@ -10,12 +10,12 @@ if type(S) ~= "table" or S.killed then
 		FEATURES = {
 			aura = false, velocity = false, noslow = false, bhop = false,
 			speed = false, glow = true, strafe = false, esp = true, watermark = true,
-			autoclick = false, nametags = true,
+			autoclick = false, nametags = true, fly = false, noclip = false, spider = false,
 		},
 		VALUES = {
 			cps = 10, range = 60, reach = 3.2, attackDist = 3.4,
 			speed = 2.5, kbKeep = 0, targets = "All", aimMode = "Instant",
-			fov = 360,
+			fov = 360, flySpeed = 0.15,
 		},
 		BINDS = {
 			aura = Enum.KeyCode.F, speed = Enum.KeyCode.G,

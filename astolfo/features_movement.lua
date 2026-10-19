@@ -1,6 +1,18 @@
--- features_movement — Speed, Velocity, NoSlow, Bhop, TargetStrafe
+-- features_movement — Speed, Velocity, NoSlow, Bhop, TargetStrafe, Fly, Noclip, Spider
 local S = getgenv().Astolfo
 local UserInputService = S.UserInputService
+
+-- Only the local player: the sim mirrors our state into the player's own
+-- attributes every tick, so we can match the state table by position.
+local function isLocalState(state)
+	local x = S.player:GetAttribute("X")
+	local y = S.player:GetAttribute("Y")
+	local z = S.player:GetAttribute("Z")
+	if x == nil then
+		return false
+	end
+	return math.abs(state.x - x) < 0.6 and math.abs(state.y - y) < 0.6 and math.abs(state.z - z) < 0.6
+end
 
 -- Speed: the sim reads moveSpeed through the module table each tick; ghosts tick
 -- with zero input so only the local player is affected.
@@ -36,7 +48,7 @@ if S.kbDelay and type(S.kbDelay.take) == "function" then
 	S.hookStatus.kbTake = true
 end
 
--- NoSlow: compensate the sneak/use input scales inside Movement.tick.
+-- NoSlow + Fly + Spider ride the Movement.tick hook.
 if S.physics and S.physics.Movement and type(S.physics.Movement.tick) == "function" and S.physics.Constants then
 	S.orig.tick = S.physics.Movement.tick
 	local SNEAK = S.physics.Constants.SNEAK_INPUT_SCALE or 0.3
@@ -54,9 +66,41 @@ if S.physics and S.physics.Movement and type(S.physics.Movement.tick) == "functi
 				input = { forward = fwd, strafe = strafe, jump = input.jump }
 			end
 		end
-		return S.orig.tick(state, input, world, p4)
+		local r = S.orig.tick(state, input, world, p4)
+		if not S.killed and input and isLocalState(state) then
+			if S.FEATURES.fly then
+				-- cancel gravity and drive height from jump/sneak
+				local FLY = S.VALUES.flySpeed
+				state.y = state.y + (input.jump and FLY or 0) - (state.sneaking and FLY or 0)
+				state.vy = 0
+				state.onGround = false
+			elseif S.FEATURES.spider and state.collidedHorizontally and not state.onGround then
+				state.vy = 0.2
+			end
+		end
+		return r
 	end
 	S.hookStatus.tick = true
+end
+
+-- Noclip: skip block collision for the local player
+if S.physics and S.physics.Collision and type(S.physics.Collision.move) == "function" then
+	S.orig.collisionMove = S.physics.Collision.move
+	S.physics.Collision.move = function(state, world, dx, dy, dz, trace)
+		if S.FEATURES.noclip and not S.killed and isLocalState(state) then
+			state.x = state.x + dx
+			state.y = state.y + dy
+			state.z = state.z + dz
+			state.onGround = false
+			state.collidedHorizontally = false
+			if trace and trace.boxes then
+				table.clear(trace.boxes)
+			end
+			return
+		end
+		return S.orig.collisionMove(state, world, dx, dy, dz, trace)
+	end
+	S.hookStatus.collisionMove = true
 end
 
 -- Bhop + TargetStrafe: rewrite the held input. The sim sets the local state's

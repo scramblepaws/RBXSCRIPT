@@ -116,8 +116,14 @@ function S.unload()
 		if S.orig.rayHit and p.Combat then p.Combat.rayHit = S.orig.rayHit end
 		if S.orig.moveSpeed and p.Movement then p.Movement.moveSpeed = S.orig.moveSpeed end
 		if S.orig.tick and p.Movement then p.Movement.tick = S.orig.tick end
+		if S.orig.collisionMove and p.Collision then p.Collision.move = S.orig.collisionMove end
 	end
 	S.restorePatches()
+	pcall(function()
+		if S.Luna then
+			S.Luna:Destroy()
+		end
+	end)
 	if getgenv then
 		getgenv().Astolfo = nil
 	end
