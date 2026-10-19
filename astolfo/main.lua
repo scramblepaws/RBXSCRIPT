@@ -7,8 +7,34 @@ local Workspace = S.Workspace
 local RENDER_NAME = "AstolfoClient"
 local connections = {}
 
+-- The game locks the mouse to the center every frame; while the menu is open we
+-- re-unlock it every frame (our render step runs after the game's, so we win).
+S.menuOpen = false
+local function menuIsOpen()
+	if S.Window and type(S.Window.Toggled) == "boolean" then
+		return S.Window.Toggled
+	end
+	return S.menuOpen
+end
+
+local function unlockMouse()
+	pcall(function()
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = true
+	end)
+end
+
+connections[#connections + 1] = RunService.Heartbeat:Connect(function()
+	if not S.killed and menuIsOpen() then
+		unlockMouse()
+	end
+end)
+
 local function step(dt)
 	local camera = Workspace.CurrentCamera
+	if not S.killed and menuIsOpen() then
+		unlockMouse()
+	end
 	S.target, S.targetDist, S.targetPos = S.findTarget()
 
 	-- aim at the game's own lag-compensated box nearest the target (the server
@@ -138,13 +164,9 @@ connections[#connections + 1] = UserInputService.InputBegan:Connect(function(inp
 	if S.killed then
 		return
 	end
-	if S.capturingBind then
-		if input.UserInputType == Enum.UserInputType.Keyboard then
-			S.capturingBind.set(input.KeyCode)
-			S.capturingBind.button.Text = input.KeyCode.Name
-			S.capturingBind = nil
-		end
-		return
+	-- keep the fallback menu flag in sync with the Luna toggle bind
+	if input.KeyCode == Enum.KeyCode.RightShift and input.UserInputType == Enum.UserInputType.Keyboard then
+		S.menuOpen = not S.menuOpen
 	end
 	if gameProcessed then
 		return
