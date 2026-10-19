@@ -140,20 +140,43 @@ local function targetCandidates()
 	return out
 end
 
-local function findTarget()
+-- The camera is Scriptable and unreliable in this game; the sim keeps the real
+-- position in the player's own attributes, so measure from those.
+local function selfPos()
+	local x = player:GetAttribute("X")
+	local y = player:GetAttribute("Y")
+	local z = player:GetAttribute("Z")
+	if x then
+		return Vector3.new(x, y or 0, z or 0)
+	end
 	local camera = Workspace.CurrentCamera
-	local camPos = camera and camera.CFrame.Position or Vector3.zero
+	return camera and camera.CFrame.Position or Vector3.zero
+end
+
+local function findTarget()
+	local myPos = selfPos()
 	local best, bestDist, bestPos
 	for _, m in ipairs(targetCandidates()) do
 		local h = findHead(m)
 		if h and h.Parent then
-			local d = (h.Position - camPos).Magnitude
+			local d = (h.Position - myPos).Magnitude
 			if d <= VALUES.range and d < (bestDist or math.huge) then
 				best, bestDist, bestPos = m, d, h.Position
 			end
 		end
 	end
 	return best, bestDist, bestPos
+end
+
+local function targetHealth(m)
+	local id = m.Name:match("MCBody%s+(%S+)$")
+	local mcPlayers = Workspace:FindFirstChild("MCPlayers")
+	local pinst = id and mcPlayers and mcPlayers:FindFirstChild(id)
+	local h = pinst and pinst:GetAttribute("Health")
+	if h == nil and m:FindFirstChild("Info") then
+		h = m.Info:GetAttribute("Health")
+	end
+	return h
 end
 
 --------------------------------------------------------------------
@@ -246,7 +269,7 @@ local hookStatus = {}
 -- The game's own loop fires fireLook(handles, realYaw, realPitch) each frame; we
 -- rewrite the values toward the target, bounded so the anti-cheat's aim snap
 -- budget (35 deg/tick) is never exceeded. Camera/screen stay on the real look.
-local AIM_MAX_DEG_PER_FRAME = 8
+local AIM_MAX_DEG_PER_FRAME = 11 -- ~700 deg/s at 60fps: just under the 35 deg/tick snap budget
 if inputs and type(inputs.fireLook) == "function" and aimAssist then
 	orig.fireLook = inputs.fireLook
 	inputs.fireLook = function(handles, yaw, pitch)
@@ -379,26 +402,19 @@ end
 
 local RENDER_NAME = "AstolfoClient"
 local drawings = {}
-local box, label, wm
-local tracerPool = {}
+local label, wm
+local boxPool, tracerPool, hpBgPool, hpFgPool = {}, {}, {}, {}
 
 do
 	local ok = pcall(function()
 		if not Drawing then
 			error("no Drawing")
 		end
-		box = Drawing.new("Square")
-		box.Thickness = 2
-		box.Filled = false
-		box.Color = Color3.fromRGB(255, 60, 60)
-		box.Visible = false
-		drawings[#drawings + 1] = box
-
 		label = Drawing.new("Text")
 		label.Size = 16
 		label.Center = true
 		label.Outline = true
-		label.Color = Color3.fromRGB(255, 60, 60)
+		label.Color = Color3.fromRGB(255, 255, 255)
 		label.Visible = false
 		drawings[#drawings + 1] = label
 
@@ -412,13 +428,36 @@ do
 		drawings[#drawings + 1] = wm
 
 		for _ = 1, 24 do
-			local line = Drawing.new("Line")
-			line.Thickness = 1
-			line.Color = Color3.fromRGB(255, 90, 90)
-			line.Transparency = 0.4
-			line.Visible = false
-			drawings[#drawings + 1] = line
-			tracerPool[#tracerPool + 1] = line
+			local sq = Drawing.new("Square")
+			sq.Thickness = 2
+			sq.Filled = false
+			sq.Color = Color3.fromRGB(255, 60, 60)
+			sq.Visible = false
+			drawings[#drawings + 1] = sq
+			boxPool[#boxPool + 1] = sq
+
+			local tr = Drawing.new("Line")
+			tr.Thickness = 1
+			tr.Color = Color3.fromRGB(255, 90, 90)
+			tr.Transparency = 0.45
+			tr.Visible = false
+			drawings[#drawings + 1] = tr
+			tracerPool[#tracerPool + 1] = tr
+
+			local hbg = Drawing.new("Square")
+			hbg.Filled = true
+			hbg.Color = Color3.fromRGB(10, 10, 10)
+			hbg.Transparency = 0.4
+			hbg.Visible = false
+			drawings[#drawings + 1] = hbg
+			hpBgPool[#hpBgPool + 1] = hbg
+
+			local hfg = Drawing.new("Square")
+			hfg.Filled = true
+			hfg.Color = Color3.fromRGB(80, 255, 100)
+			hfg.Visible = false
+			drawings[#drawings + 1] = hfg
+			hpFgPool[#hpFgPool + 1] = hfg
 		end
 	end)
 	if not ok then
@@ -480,45 +519,73 @@ local function step(dt)
 		screenPos = onScreen and p or nil
 	end
 
-	if box and label then
-		if FEATURES.esp and screenPos then
-			local dist = targetDist or 0
-			local size = math.clamp(900 / math.max(dist, 1), 24, 260)
-			box.Size = Vector2.new(size, size * 1.35)
-			box.Position = Vector2.new(screenPos.X - size / 2, screenPos.Y - size * 0.68)
-			box.Visible = true
-			label.Position = Vector2.new(screenPos.X, screenPos.Y - size * 0.78 - 14)
-			label.Text = target.Name .. "  [" .. math.floor(dist) .. "]"
-			label.Visible = true
-		else
-			box.Visible = false
-			label.Visible = false
-		end
-	end
-
+	-- ESP: 2D box + health bar + tracer to bottom-center for everyone in range
 	if FEATURES.esp and camera then
+		local myPos = selfPos()
 		local cands = targetCandidates()
-		local bottom = camera.ViewportSize.Y
-		for i = 1, #tracerPool do
-			local line = tracerPool[i]
+		local vp = camera.ViewportSize
+		for i = 1, #boxPool do
 			local m = cands[i]
+			local sq, tr, hbg, hfg = boxPool[i], tracerPool[i], hpBgPool[i], hpFgPool[i]
 			if m then
 				local h = findHead(m)
 				if h and h.Parent then
 					local p, onScreen = camera:WorldToViewportPoint(h.Position)
 					if onScreen then
-						line.From = Vector2.new(p.X, p.Y)
-						line.To = Vector2.new(p.X, bottom - 4)
-						line.Visible = true
+						local d = (h.Position - myPos).Magnitude
+						local size = math.clamp(900 / math.max(d, 1), 18, 180)
+						sq.Size = Vector2.new(size, size * 1.35)
+						sq.Position = Vector2.new(p.X - size / 2, p.Y - size * 0.68)
+						sq.Thickness = m == target and 3 or 2
+						sq.Color = m == target and Color3.fromRGB(255, 255, 120) or Color3.fromRGB(255, 60, 60)
+						sq.Visible = true
+						tr.From = Vector2.new(p.X, p.Y)
+						tr.To = Vector2.new(vp.X / 2, vp.Y)
+						tr.Visible = true
+						local hp = targetHealth(m)
+						if hp then
+							local frac = math.clamp(hp / 20, 0, 1)
+							hbg.Position = Vector2.new(p.X - size / 2, p.Y - size * 0.68 - 7)
+							hbg.Size = Vector2.new(size, 5)
+							hbg.Visible = true
+							hfg.Position = hbg.Position
+							hfg.Size = Vector2.new(size * frac, 5)
+							hfg.Color = Color3.fromRGB(255, 60, 60):Lerp(Color3.fromRGB(60, 255, 90), frac)
+							hfg.Visible = true
+						else
+							hbg.Visible = false
+							hfg.Visible = false
+						end
 					else
-						line.Visible = false
+						sq.Visible, tr.Visible, hbg.Visible, hfg.Visible = false, false, false, false
 					end
 				else
-					line.Visible = false
+					sq.Visible, tr.Visible, hbg.Visible, hfg.Visible = false, false, false, false
 				end
 			else
-				line.Visible = false
+				sq.Visible, tr.Visible, hbg.Visible, hfg.Visible = false, false, false, false
 			end
+		end
+		if label then
+			if screenPos and target then
+				local hp = targetHealth(target)
+				label.Position = Vector2.new(screenPos.X, screenPos.Y - 60)
+				label.Text = target.Name .. " [" .. math.floor(targetDist or 0) .. "]"
+					.. (hp and ("  " .. math.floor(hp) .. "hp") or "")
+				label.Visible = true
+			else
+				label.Visible = false
+			end
+		end
+	elseif boxPool[1] then
+		for i = 1, #boxPool do
+			boxPool[i].Visible = false
+			tracerPool[i].Visible = false
+			hpBgPool[i].Visible = false
+			hpFgPool[i].Visible = false
+		end
+		if label then
+			label.Visible = false
 		end
 	end
 
