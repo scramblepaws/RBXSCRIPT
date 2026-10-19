@@ -211,6 +211,9 @@ end
 
 --------------------------------------------------------------------
 -- Hooks (the actual cheats)
+-- Plain table assignment, NOT hookfunction: the game reads these through the
+-- module table at call time (u7.moveSpeed(...), Combat.rayHit(...) in source),
+-- so replacing the field is enough and cannot recurse.
 --------------------------------------------------------------------
 
 local enabled = false
@@ -222,10 +225,11 @@ local lastClick = 0
 local physics = requireShared("MCPhysics")
 local aimAssist = requireShared("AimAssist")
 
+local origRayHit, origMoveSpeed
 local rayHooked = false
-if physics and physics.Combat and type(hookfunction) == "function" and aimAssist then
-	local origRayHit = physics.Combat.rayHit
-	hookfunction(physics.Combat.rayHit, function(x, y, z, yaw, pitch, box, reach)
+if physics and physics.Combat and type(physics.Combat.rayHit) == "function" and aimAssist then
+	origRayHit = physics.Combat.rayHit
+	physics.Combat.rayHit = function(x, y, z, yaw, pitch, box, reach)
 		if enabled and not killed and targetPos and box then
 			local cx = (box.minX + box.maxX) / 2
 			local cy = (box.minY + box.maxY) / 2
@@ -236,21 +240,37 @@ if physics and physics.Combat and type(hookfunction) == "function" and aimAssist
 			end
 		end
 		return origRayHit(x, y, z, yaw, pitch, box, reach)
-	end)
+	end
 	rayHooked = true
 end
 
 local moveHooked = false
-if physics and physics.Movement and type(hookfunction) == "function" then
-	local origMoveSpeed = physics.Movement.moveSpeed
-	hookfunction(physics.Movement.moveSpeed, function(state)
-		local v = origMoveSpeed(state)
+if physics and physics.Movement and type(physics.Movement.moveSpeed) == "function"
+	and physics.Movement.movementSpeedAttribute and physics.MathHelper then
+	origMoveSpeed = physics.Movement.moveSpeed
+	local f32 = physics.MathHelper.f32
+	physics.Movement.moveSpeed = function(state)
+		-- same computation as the game's own moveSpeed, so the sim stays consistent
+		local v = f32(physics.Movement.movementSpeedAttribute(
+			state.sprinting, state.speedLevel, state.slownessLevel, state.abilitySpeed))
 		if speedOn and not killed and v then
 			return v * CONFIG.SPEED_MULT
 		end
 		return v
-	end)
+	end
 	moveHooked = true
+end
+
+local function restoreHooks()
+	local p = requireShared("MCPhysics")
+	if p then
+		if origRayHit and p.Combat then
+			p.Combat.rayHit = origRayHit
+		end
+		if origMoveSpeed and p.Movement then
+			p.Movement.moveSpeed = origMoveSpeed
+		end
+	end
 end
 
 --------------------------------------------------------------------
@@ -391,11 +411,12 @@ local function unload()
 	end
 	table.clear(drawings)
 	box, label, wm = nil, nil, nil
+	restoreHooks()
 	restorePatches()
 	if getgenv then
 		getgenv().Aim = nil
 	end
-	print("[Aim] script killed — hooks pass through, patches restored, drawings removed.")
+	print("[Aim] script killed — hooks restored, patches restored, drawings removed.")
 end
 
 --------------------------------------------------------------------
