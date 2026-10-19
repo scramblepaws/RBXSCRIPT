@@ -19,9 +19,12 @@ local CONFIG = {
 	AUTO_CLICK = true, -- click at the target while aiming
 	CLICK_INTERVAL = 0.2, -- seconds between clicks
 	PATCH_REACH = true, -- raise the game's own client-side reach constants
-	REACH_COMBAT = 7, -- game default 3
+	REACH_COMBAT = 4.5, -- game default 3; the anti-cheat tracks reach decay, stay modest
 	REACH_BLOCKS = 8, -- game default 4.5
-	SPEED_BONUS = 30, -- extra studs/second while moving (boost toggled with G)
+	PATCH_ANTICHEAT = true, -- disable the client-side violation tracker (Config.AntiCheat.Enabled)
+	SPEED_WALK_MULT = 2.5, -- G boost: multiplier on the sim's own WALK_SPEED/BASE_MOVE_SPEED
+	SPEED_SPRINT_MULT = 2, -- G boost: multiplier on SPRINT_SPEED_MODIFIER
+	AIM_DEG_PER_FRAME = 10, -- max head turn per frame (~600 deg/s, under the 35 deg/tick snap limit)
 	WATERMARK = "Astolfo", -- top-of-screen scrolling text
 	WATERMARK_ON = true,
 	WATERMARK_SIZE = 40,
@@ -170,6 +173,27 @@ local function AimAt(target)
 end
 
 -- Turn your whole avatar toward `targetHead`: head looks fully, body yaws (keeps it upright).
+-- Rotation is rate-limited so it stays under the anti-cheat's aim-snap budget.
+local function turnToward(part, goalPos)
+	if not part or not part.Parent then
+		return false
+	end
+	local cur = part.CFrame
+	local goal = CFrame.lookAt(part.Position, goalPos)
+	local maxRad = math.rad(CONFIG.AIM_DEG_PER_FRAME)
+	local dot = cur.LookVector:Dot(goal.LookVector)
+	local ang = math.acos(math.clamp(dot, -1, 1))
+	if ang > maxRad then
+		local axis = cur.LookVector:Cross(goal.LookVector)
+		if axis.Magnitude < 1e-6 then
+			axis = Vector3.new(0, 1, 0)
+		end
+		goal = CFrame.new(part.Position) * CFrame.fromAxisAngle(axis.Unit, maxRad) * (cur - part.Position)
+	end
+	part.CFrame = goal
+	return true
+end
+
 local function AimModel(model, targetHead)
 	if not model or not targetHead or not targetHead.Parent then
 		return false
@@ -177,8 +201,7 @@ local function AimModel(model, targetHead)
 	local did = false
 	local head = findHead(model)
 	if head and head.Parent then
-		head.CFrame = CFrame.lookAt(head.Position, targetHead.Position)
-		did = true
+		did = turnToward(head, targetHead.Position) or did
 	end
 	if CONFIG.AIM_WHOLE_BODY then
 		local root = findRoot(model)
@@ -186,8 +209,7 @@ local function AimModel(model, targetHead)
 			local dir = targetHead.Position - root.Position
 			local flat = Vector3.new(dir.X, 0, dir.Z)
 			if flat.Magnitude > 0.01 then
-				root.CFrame = CFrame.lookAt(root.Position, root.Position + flat)
-				did = true
+				did = turnToward(root, root.Position + flat) or did
 			end
 		end
 	end
@@ -220,37 +242,105 @@ local function click(x, y)
 end
 
 --------------------------------------------------------------------
--- Game patches: raise the client's own reach constants.
--- ModuleScripts are cached per-require, so mutating the table the game
--- already required is live. REACH lives in ReplicatedStorage.Shared.MCPhysics.
+-- Game patches (all live: require returns the same cached table the game uses)
+--   * Combat.REACH / Blocks.REACH — hit/break range
+--   * Config.AntiCheat.Enabled — the client-side violation tracker (aim snap,
+--     reach decay, movement). False = it stops accumulating violations locally.
+--   * Constants.WALK_SPEED etc. — the sim moves the avatar from these each tick,
+--     so boosting them keeps the sim and the MoveReport in agreement (no movement
+--     violation) — unlike CFrame shoving, which the driver overwrites 3x per tick.
 --------------------------------------------------------------------
 
-local function patchReach()
-	if not CONFIG.PATCH_REACH then
-		return "disabled"
-	end
+local patches = {} -- originals, restored by the kill switch
+
+local function requireShared(name)
 	local shared = ReplicatedStorage:FindFirstChild("Shared")
-	local mod = shared and shared:FindFirstChild("MCPhysics")
+	local mod = shared and shared:FindFirstChild(name)
 	if not mod then
-		return "MCPhysics not found"
+		return nil
 	end
-	local ok, physics = pcall(require, mod)
-	if not ok or typeof(physics) ~= "table" then
-		return "require failed: " .. tostring(physics)
-	end
-	local changed = {}
-	if physics.Combat and physics.Combat.REACH then
-		changed[#changed + 1] = "Combat.REACH " .. physics.Combat.REACH .. "->" .. CONFIG.REACH_COMBAT
-		physics.Combat.REACH = CONFIG.REACH_COMBAT
-	end
-	if physics.Blocks and physics.Blocks.REACH then
-		changed[#changed + 1] = "Blocks.REACH " .. physics.Blocks.REACH .. "->" .. CONFIG.REACH_BLOCKS
-		physics.Blocks.REACH = CONFIG.REACH_BLOCKS
-	end
-	return #changed > 0 and table.concat(changed, ", ") or "no REACH fields found"
+	local ok, res = pcall(require, mod)
+	return ok and typeof(res) == "table" and res or nil
 end
 
-local reachResult = patchReach()
+local function patchGame()
+	local physics = requireShared("MCPhysics")
+	local changed = {}
+	if physics then
+		if physics.Combat and physics.Combat.REACH then
+			patches.reach = physics.Combat.REACH
+			physics.Combat.REACH = CONFIG.REACH_COMBAT
+			changed[#changed + 1] = "Combat.REACH " .. patches.reach .. "->" .. CONFIG.REACH_COMBAT
+		end
+		if physics.Blocks and physics.Blocks.REACH then
+			patches.blockReach = physics.Blocks.REACH
+			physics.Blocks.REACH = CONFIG.REACH_BLOCKS
+			changed[#changed + 1] = "Blocks.REACH " .. patches.blockReach .. "->" .. CONFIG.REACH_BLOCKS
+		end
+		if physics.Constants then
+			patches.constants = {
+				walk = physics.Constants.WALK_SPEED,
+				base = physics.Constants.BASE_MOVE_SPEED,
+				sprint = physics.Constants.SPRINT_SPEED_MODIFIER,
+			}
+		end
+	end
+	if CONFIG.PATCH_ANTICHEAT then
+		local config = requireShared("Config")
+		if config and config.AntiCheat then
+			patches.acEnabled = config.AntiCheat.Enabled
+			config.AntiCheat.Enabled = false
+			changed[#changed + 1] = "AntiCheat.Enabled " .. tostring(patches.acEnabled) .. "->false"
+		end
+	end
+	return #changed > 0 and table.concat(changed, ", ") or "nothing patched"
+end
+
+local patchResult = patchGame()
+
+local speedOn = false
+
+local function setSpeed(on)
+	if not patches.constants then
+		return false
+	end
+	local physics = requireShared("MCPhysics")
+	if not physics or not physics.Constants then
+		return false
+	end
+	local c = physics.Constants
+	if on then
+		c.WALK_SPEED = patches.constants.walk * CONFIG.SPEED_WALK_MULT
+		c.BASE_MOVE_SPEED = patches.constants.base * CONFIG.SPEED_WALK_MULT
+		c.SPRINT_SPEED_MODIFIER = patches.constants.sprint * CONFIG.SPEED_SPRINT_MULT
+	else
+		c.WALK_SPEED = patches.constants.walk
+		c.BASE_MOVE_SPEED = patches.constants.base
+		c.SPRINT_SPEED_MODIFIER = patches.constants.sprint
+	end
+	return true
+end
+
+local function restorePatches()
+	local physics = requireShared("MCPhysics")
+	if physics then
+		if patches.reach and physics.Combat then
+			physics.Combat.REACH = patches.reach
+		end
+		if patches.blockReach and physics.Blocks then
+			physics.Blocks.REACH = patches.blockReach
+		end
+		if patches.constants and physics.Constants then
+			setSpeed(false)
+		end
+	end
+	if patches.acEnabled ~= nil then
+		local config = requireShared("Config")
+		if config and config.AntiCheat then
+			config.AntiCheat.Enabled = patches.acEnabled
+		end
+	end
+end
 
 -- exported for manual use
 if getgenv then
@@ -305,38 +395,8 @@ end
 --------------------------------------------------------------------
 
 local enabled = false
-local speedOn = false
 local target, targetHead, targetDist
 local lastClick = 0
-
--- shove the avatar forward with WASD, camera-relative. No Humanoid, so we move the root.
-local function applySpeed(dt, model, camera)
-	if not speedOn or not model or not camera then
-		return
-	end
-	local dir = Vector3.zero
-	if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-		dir = dir + camera.CFrame.LookVector
-	end
-	if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-		dir = dir - camera.CFrame.LookVector
-	end
-	if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-		dir = dir + camera.CFrame.RightVector
-	end
-	if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-		dir = dir - camera.CFrame.RightVector
-	end
-	dir = Vector3.new(dir.X, 0, dir.Z)
-	if dir.Magnitude < 0.01 then
-		return
-	end
-	local root = findRoot(model) or model.PrimaryPart
-	if not root then
-		return
-	end
-	root.CFrame = root.CFrame + dir.Unit * (CONFIG.SPEED_BONUS * dt)
-end
 
 -- watermark: scrolls left->right forever, colour pulses between light and dark blue
 local wmClock = 0
@@ -373,13 +433,8 @@ local function step(dt)
 
 	stepWatermark(dt)
 
-	local model = localModel()
-	if dt then
-		applySpeed(dt, model, camera)
-	end
-
 	if enabled and targetHead then
-		AimModel(model, targetHead)
+		AimModel(localModel(), targetHead)
 		if CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
 			lastClick = tick()
 			local cx = camera and camera.ViewportSize.X / 2 or 0
@@ -441,10 +496,11 @@ local function unload()
 	end
 	table.clear(drawings)
 	box, label, wm = nil, nil, nil
+	restorePatches()
 	if getgenv then
 		getgenv().Aim = nil
 	end
-	print("[Aim] script killed — unhooked, drawings removed.")
+	print("[Aim] script killed — unhooked, patches restored, drawings removed.")
 end
 
 --------------------------------------------------------------------
@@ -463,7 +519,9 @@ connections[#connections + 1] = UserInputService.InputBegan:Connect(function(inp
 		unload()
 	elseif input.KeyCode == CONFIG.SPEED_BIND then
 		speedOn = not speedOn
-		print("[Aim] speed boost " .. (speedOn and "ON (+" .. CONFIG.SPEED_BONUS .. " studs/s)" or "OFF"))
+		local ok = setSpeed(speedOn)
+		print("[Aim] speed boost " .. (speedOn and "ON (WALK_SPEED x" .. CONFIG.SPEED_WALK_MULT .. ")" or "OFF")
+			.. (ok and "" or " — Constants table not found!"))
 	end
 end)
 
@@ -504,7 +562,7 @@ task.spawn(function()
 		.. "  parts: " .. tostring(model and #model:GetChildren() or 0))
 	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
 		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
-	print("[Aim][check] reach patch: " .. tostring(reachResult))
+	print("[Aim][check] patches: " .. tostring(patchResult))
 	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.SPEED_BIND.Name
 		.. " speed boost | " .. CONFIG.KILL_BIND.Name .. " kill script")
 end)
