@@ -19,6 +19,8 @@ local FEATURES = {
 	noslow = false,
 	bhop = false,
 	speed = false,
+	glow = true,
+	strafe = false,
 	esp = true,
 	watermark = true,
 }
@@ -159,12 +161,17 @@ end
 --------------------------------------------------------------------
 
 local function requireShared(name)
-	local shared = ReplicatedStorage:FindFirstChild("Shared")
-	local mod = shared and shared:FindFirstChild(name)
-	if not mod then
+	local node = ReplicatedStorage:FindFirstChild("Shared")
+	if not node then
 		return nil
 	end
-	local ok, res = pcall(require, mod)
+	for part in name:gmatch("[^/]+") do
+		node = node and node:FindFirstChild(part)
+	end
+	if not node then
+		return nil
+	end
+	local ok, res = pcall(require, node)
 	return ok and typeof(res) == "table" and res or nil
 end
 
@@ -336,17 +343,29 @@ if physics and physics.Movement and type(physics.Movement.tick) == "function" an
 	hookStatus.tick = true
 end
 
--- Bhop: force Jump on the held input while moving.
+-- Bhop + TargetStrafe: rewrite the held input. The sim sets the local state's
+-- yaw from the Look stream every tick, so while the aura aims, Forward walks
+-- toward the target and strafe orbits around it.
 if inputs and type(inputs.fireHeld) == "function" then
 	orig.fireHeld = inputs.fireHeld
 	inputs.fireHeld = function(handles, held)
-		if not killed and FEATURES.bhop and held and UserInputService:GetFocusedTextBox() == nil then
-			local moving = UserInputService:IsKeyDown(Enum.KeyCode.W)
-				or UserInputService:IsKeyDown(Enum.KeyCode.A)
-				or UserInputService:IsKeyDown(Enum.KeyCode.S)
-				or UserInputService:IsKeyDown(Enum.KeyCode.D)
-			if moving then
-				held.Jump = true
+		if not killed and held and UserInputService:GetFocusedTextBox() == nil then
+			local strafing = FEATURES.strafe and FEATURES.aura and targetPos ~= nil
+			if strafing then
+				held.Forward = (targetDist or 0) > 4.5
+				held.Back = false
+				held.Left = true
+				held.Right = false
+			end
+			if FEATURES.bhop then
+				local moving = strafing
+					or UserInputService:IsKeyDown(Enum.KeyCode.W)
+					or UserInputService:IsKeyDown(Enum.KeyCode.A)
+					or UserInputService:IsKeyDown(Enum.KeyCode.S)
+					or UserInputService:IsKeyDown(Enum.KeyCode.D)
+				if moving then
+					held.Jump = true
+				end
 			end
 		end
 		return orig.fireHeld(handles, held)
@@ -426,11 +445,34 @@ local function stepWatermark(dt)
 	wm.Color = Color3.fromRGB(40, 170, 255):Lerp(Color3.fromRGB(6, 30, 90), t)
 end
 
+-- bright glow around the KillAura target (visible through walls)
+local glow = nil
+local function stepGlow()
+	local show = not killed and FEATURES.aura and FEATURES.glow and target
+	if show then
+		if not glow then
+			glow = Instance.new("Highlight")
+			glow.Name = "AstolfoTarget"
+			glow.FillColor = Color3.fromRGB(255, 45, 45)
+			glow.FillTransparency = 0.55
+			glow.OutlineColor = Color3.fromRGB(255, 70, 70)
+			glow.OutlineTransparency = 0
+			glow.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		end
+		if glow.Parent ~= target then
+			glow.Parent = target
+		end
+	elseif glow then
+		glow.Parent = nil
+	end
+end
+
 local function step(dt)
 	local camera = Workspace.CurrentCamera
 	target, targetDist, targetPos = findTarget()
 
 	stepWatermark(dt)
+	stepGlow()
 
 	local screenPos
 	if targetPos and camera then
@@ -627,6 +669,11 @@ local function buildGui()
 	end, 2.5, 4, 0.1)
 	addSliderRow("AttackDist", function() return VALUES.attackDist end, function(v) VALUES.attackDist = v end, 2.5, 4.5, 0.1)
 	addCycleRow("Targets", function() return VALUES.targets end, function(v) VALUES.targets = v end, { "All", "Players", "Bots" })
+	addToggleRow("Glow target", function() return FEATURES.glow end, function(v) FEATURES.glow = v end)
+	addToggleRow("TargetStrafe", function() return FEATURES.strafe end, function(v)
+		FEATURES.strafe = v
+		print("[Astolfo] TargetStrafe " .. (v and "ON" or "OFF"))
+	end)
 	addToggleRow("Speed", function() return FEATURES.speed end, function(v)
 		FEATURES.speed = v
 		print("[Astolfo] Speed " .. (v and ("ON x" .. VALUES.speed) or "OFF"))
@@ -694,6 +741,10 @@ function unload()
 		end)
 	end
 	table.clear(drawings)
+	if glow then
+		glow:Destroy()
+		glow = nil
+	end
 	if guiRoot then
 		guiRoot:Destroy()
 	end
