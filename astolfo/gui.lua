@@ -26,7 +26,7 @@ local function printOn(name, v)
 end
 
 -- Combat -----------------------------------------------------------------
-local combat = Window:CreateTab("Combat", "4483362458")
+local combat = Window:CreateTab("Combat", "swords")
 
 combat:CreateSection("KillAura")
 combat:CreateToggle({ Name = "KillAura", CurrentValue = S.FEATURES.aura, Flag = "aura",
@@ -64,7 +64,7 @@ combat:CreateToggle({ Name = "AutoClicker", CurrentValue = S.FEATURES.autoclick,
 	Callback = function(v) S.FEATURES.autoclick = v; printOn("AutoClicker", v) end })
 
 -- Movement ---------------------------------------------------------------
-local movement = Window:CreateTab("Movement", "3259050989")
+local movement = Window:CreateTab("Movement", "gauge")
 movement:CreateToggle({ Name = "Speed", CurrentValue = S.FEATURES.speed, Flag = "speed",
 	Callback = function(v)
 		S.FEATURES.speed = v
@@ -78,7 +78,7 @@ movement:CreateToggle({ Name = "NoSlow", CurrentValue = S.FEATURES.noslow, Flag 
 	Callback = function(v) S.FEATURES.noslow = v end })
 
 -- Render -----------------------------------------------------------------
-local render = Window:CreateTab("Render", "3602733521")
+local render = Window:CreateTab("Render", "eye")
 render:CreateToggle({ Name = "ESP", CurrentValue = S.FEATURES.esp, Flag = "esp",
 	Callback = function(v) S.FEATURES.esp = v end })
 render:CreateToggle({ Name = "Nametags", CurrentValue = S.FEATURES.nametags, Flag = "nametags",
@@ -90,7 +90,7 @@ render:CreateToggle({ Name = "Watermark", CurrentValue = S.FEATURES.watermark, F
 	end })
 
 -- Client -----------------------------------------------------------------
-local client = Window:CreateTab("Client", "80503127983237")
+local client = Window:CreateTab("Client", "settings")
 client:CreateKeybind({ Name = "Aura bind", CurrentKeybind = S.BINDS.aura.Name, HoldToInteract = false,
 	Callback = function(k) S.BINDS.aura = k end })
 client:CreateKeybind({ Name = "Speed bind", CurrentKeybind = S.BINDS.speed.Name, HoldToInteract = false,
