@@ -18,6 +18,9 @@ local CONFIG = {
 	AIM_WHOLE_BODY = true, -- yaw the body too, not just the head
 	AUTO_CLICK = true, -- click at the target while aiming
 	CLICK_INTERVAL = 0.2, -- seconds between clicks
+	PATCH_REACH = true, -- raise the game's own client-side reach constants
+	REACH_COMBAT = 7, -- game default 3
+	REACH_BLOCKS = 8, -- game default 4.5
 	SPEED_BONUS = 30, -- extra studs/second while moving (boost toggled with G)
 	WATERMARK = "Astolfo", -- top-of-screen scrolling text
 	WATERMARK_ON = true,
@@ -37,6 +40,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 if not player then
@@ -214,6 +218,39 @@ local function click(x, y)
 	end)
 	return ok
 end
+
+--------------------------------------------------------------------
+-- Game patches: raise the client's own reach constants.
+-- ModuleScripts are cached per-require, so mutating the table the game
+-- already required is live. REACH lives in ReplicatedStorage.Shared.MCPhysics.
+--------------------------------------------------------------------
+
+local function patchReach()
+	if not CONFIG.PATCH_REACH then
+		return "disabled"
+	end
+	local shared = ReplicatedStorage:FindFirstChild("Shared")
+	local mod = shared and shared:FindFirstChild("MCPhysics")
+	if not mod then
+		return "MCPhysics not found"
+	end
+	local ok, physics = pcall(require, mod)
+	if not ok or typeof(physics) ~= "table" then
+		return "require failed: " .. tostring(physics)
+	end
+	local changed = {}
+	if physics.Combat and physics.Combat.REACH then
+		changed[#changed + 1] = "Combat.REACH " .. physics.Combat.REACH .. "->" .. CONFIG.REACH_COMBAT
+		physics.Combat.REACH = CONFIG.REACH_COMBAT
+	end
+	if physics.Blocks and physics.Blocks.REACH then
+		changed[#changed + 1] = "Blocks.REACH " .. physics.Blocks.REACH .. "->" .. CONFIG.REACH_BLOCKS
+		physics.Blocks.REACH = CONFIG.REACH_BLOCKS
+	end
+	return #changed > 0 and table.concat(changed, ", ") or "no REACH fields found"
+end
+
+local reachResult = patchReach()
 
 -- exported for manual use
 if getgenv then
@@ -467,6 +504,7 @@ task.spawn(function()
 		.. "  parts: " .. tostring(model and #model:GetChildren() or 0))
 	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
 		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
+	print("[Aim][check] reach patch: " .. tostring(reachResult))
 	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.SPEED_BIND.Name
 		.. " speed boost | " .. CONFIG.KILL_BIND.Name .. " kill script")
 end)
