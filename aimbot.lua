@@ -213,21 +213,28 @@ local speedOn = false
 
 local function setSpeed(on)
 	if not patches.constants then
-		return false
+		return false, "no Constants"
 	end
 	local physics = requireShared("MCPhysics")
 	if not physics or not physics.Constants then
-		return false
+		return false, "no Constants table"
 	end
 	local c = physics.Constants
-	if on then
-		c.WALK_SPEED = patches.constants.walk * CONFIG.SPEED_WALK_MULT
-		c.BASE_MOVE_SPEED = patches.constants.base * CONFIG.SPEED_WALK_MULT
-		c.SPRINT_SPEED_MODIFIER = patches.constants.sprint * CONFIG.SPEED_SPRINT_MULT
-	else
-		c.WALK_SPEED = patches.constants.walk
-		c.BASE_MOVE_SPEED = patches.constants.base
-		c.SPRINT_SPEED_MODIFIER = patches.constants.sprint
+	-- Constants is table.freeze'd in source; if the write throws we fall back later
+	-- to setting the state's speedLevel (the game's own speed-potion mechanic).
+	local ok = pcall(function()
+		if on then
+			c.WALK_SPEED = patches.constants.walk * CONFIG.SPEED_WALK_MULT
+			c.BASE_MOVE_SPEED = patches.constants.base * CONFIG.SPEED_WALK_MULT
+			c.SPRINT_SPEED_MODIFIER = patches.constants.sprint * CONFIG.SPEED_SPRINT_MULT
+		else
+			c.WALK_SPEED = patches.constants.walk
+			c.BASE_MOVE_SPEED = patches.constants.base
+			c.SPRINT_SPEED_MODIFIER = patches.constants.sprint
+		end
+	end)
+	if not ok then
+		return false, "Constants frozen"
 	end
 	return true
 end
@@ -428,9 +435,9 @@ connections[#connections + 1] = UserInputService.InputBegan:Connect(function(inp
 		unload()
 	elseif input.KeyCode == CONFIG.SPEED_BIND then
 		speedOn = not speedOn
-		local ok = setSpeed(speedOn)
-		print("[Aim] speed boost " .. (speedOn and "ON (WALK_SPEED x" .. CONFIG.SPEED_WALK_MULT .. ")" or "OFF")
-			.. (ok and "" or " — Constants table not found!"))
+		local ok, err = setSpeed(speedOn)
+		print("[Aim] speed boost " .. (speedOn and "ON (BASE_MOVE_SPEED x" .. CONFIG.SPEED_WALK_MULT .. ")" or "OFF")
+			.. (ok and "" or " — " .. tostring(err)))
 	end
 end)
 
