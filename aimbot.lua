@@ -79,6 +79,8 @@ end
 
 -- Your avatar is `MCBody <yourUserId>`. A plain `MCBody` also exists but it's an
 -- unpositioned template rig (every part sits at 0,0,0) — aiming that does nothing.
+-- If your model hasn't spawned (lobby/spectate/respawn), fall back to the MCBody
+-- nearest the camera, which is your avatar in third/first person.
 local function localModel()
 	local byId = Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
 	if byId and byId:IsA("Model") then
@@ -91,7 +93,26 @@ local function localModel()
 			return exact
 		end
 	end
-	return byId
+	local cam = Workspace.CurrentCamera
+	local camPos = cam and cam.CFrame.Position
+	if not camPos then
+		return nil
+	end
+	local best, bestDist
+	for _, m in ipairs(Workspace:GetChildren()) do
+		if m:IsA("Model")
+			and m.Name:sub(1, #CONFIG.LOCAL_MODEL_NAME) == CONFIG.LOCAL_MODEL_NAME
+			and m.Name ~= CONFIG.LOCAL_MODEL_NAME then
+			local h = findHead(m)
+			if h and h.Parent then
+				local d = (h.Position - camPos).Magnitude
+				if d < 20 and d < (bestDist or math.huge) then
+					best, bestDist = m, d
+				end
+			end
+		end
+	end
+	return best
 end
 
 local ROOT_NAMES = { "Torso", "Root", "RootPart", "UpperTorso", "HumanoidRootPart", "Body", "Chest" }
@@ -138,11 +159,13 @@ local function isTargetBody(inst)
 end
 
 local function findTarget()
-	local myHead = findHead(localModel())
-	local myPos = myHead and myHead.Position or Vector3.zero
+	local myModel = localModel()
+	local myHead = findHead(myModel)
+	local myPos = myHead and myHead.Position
+		or (Workspace.CurrentCamera and Workspace.CurrentCamera.CFrame.Position or Vector3.zero)
 	local best, bestDist, bestHead
 	for _, m in ipairs(Workspace:GetChildren()) do
-		if isTargetBody(m) then
+		if m ~= myModel and isTargetBody(m) then
 			local h = findHead(m)
 			if h and h.Parent then
 				local d = (h.Position - myPos).Magnitude
@@ -563,6 +586,13 @@ task.spawn(function()
 	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
 		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
 	print("[Aim][check] patches: " .. tostring(patchResult))
+	for i = 1, 4 do
+		task.wait(2)
+		local m2 = localModel()
+		local h2 = findHead(m2)
+		print("[Aim][check] own model (retry " .. i .. "): "
+			.. (m2 and (m2.Name .. "  head:" .. tostring(h2 ~= nil)) or "NOT FOUND"))
+	end
 	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.SPEED_BIND.Name
 		.. " speed boost | " .. CONFIG.KILL_BIND.Name .. " kill script")
 end)
