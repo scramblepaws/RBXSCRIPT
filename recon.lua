@@ -61,11 +61,32 @@ end
 
 local decompile
 do
-	-- the decompiler assigns a global `decompile` rather than returning one
+	-- the decompiler assigns a global `decompile` rather than returning one.
+	-- ponytail: `_ENV` is nil on Potassium's main chunk, so look it up in the env tables.
+	local function findDecompile()
+		local candidates = {}
+		if getgenv then
+			candidates[#candidates + 1] = getgenv()
+		end
+		candidates[#candidates + 1] = _G
+		if getrenv then
+			candidates[#candidates + 1] = getrenv()
+		end
+		for _, t in ipairs(candidates) do
+			if type(t) == "table" then
+				local f = rawget(t, "decompile")
+				if type(f) == "function" then
+					return f
+				end
+			end
+		end
+		return nil
+	end
+
 	local ok, err = pcall(function()
 		loadstring(game:HttpGet(DECOMPILER_URL, true))()
 	end)
-	decompile = _ENV.decompile or (getgenv and getgenv().decompile) or decompile
+	decompile = findDecompile()
 	if type(decompile) ~= "function" then
 		decompile = nil
 		say("decompiler unavailable: " .. tostring(err)
