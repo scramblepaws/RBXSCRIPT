@@ -67,11 +67,9 @@ local function step(dt)
 	S.updateTargetHud(dt)
 	S.stepEsp(dt)
 
-	-- swing only when the victim can actually take damage (HurtRes window = 1s)
-	local hurtRes = S.target and S.targetAttr(S.target, "HurtRes") or nil
+	-- swing at CPS; the game's own 1s hurt-resist window paces the damage
 	if S.FEATURES.aura and S.targetPos and camera
 		and (S.targetDist or math.huge) <= S.VALUES.attackDist * S.SPB
-		and (hurtRes == nil or hurtRes <= 0)
 		and tick() - S.lastClick >= 1 / S.VALUES.cps then
 		S.lastClick = tick()
 		S.click(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -143,6 +141,7 @@ function S.unload()
 		if S.orig.moveSpeed and p.Movement then p.Movement.moveSpeed = S.orig.moveSpeed end
 		if S.orig.tick and p.Movement then p.Movement.tick = S.orig.tick end
 		if S.orig.collisionMove and p.Collision then p.Collision.move = S.orig.collisionMove end
+		if S.orig.playerTick and p.Sprint then p.Sprint.playerTick = S.orig.playerTick end
 	end
 	S.restorePatches()
 	pcall(function()

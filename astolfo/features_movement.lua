@@ -2,18 +2,6 @@
 local S = getgenv().Astolfo
 local UserInputService = S.UserInputService
 
--- Only the local player: the sim mirrors our state into the player's own
--- attributes every tick, so we can match the state table by position.
-local function isLocalState(state)
-	local x = S.player:GetAttribute("X")
-	local y = S.player:GetAttribute("Y")
-	local z = S.player:GetAttribute("Z")
-	if x == nil then
-		return false
-	end
-	return math.abs(state.x - x) < 0.6 and math.abs(state.y - y) < 0.6 and math.abs(state.z - z) < 0.6
-end
-
 -- Speed: the sim reads moveSpeed through the module table each tick; ghosts tick
 -- with zero input so only the local player is affected.
 if S.physics and S.physics.Movement and type(S.physics.Movement.moveSpeed) == "function"
@@ -48,7 +36,8 @@ if S.kbDelay and type(S.kbDelay.take) == "function" then
 	S.hookStatus.kbTake = true
 end
 
--- NoSlow + Fly + Spider ride the Movement.tick hook.
+-- NoSlow: compensate the sneak/use input scales inside Movement.tick.
+-- (Ghosts pass a zero-input table, so the compensation is a no-op for them.)
 if S.physics and S.physics.Movement and type(S.physics.Movement.tick) == "function" and S.physics.Constants then
 	S.orig.tick = S.physics.Movement.tick
 	local SNEAK = S.physics.Constants.SNEAK_INPUT_SCALE or 0.3
@@ -66,12 +55,25 @@ if S.physics and S.physics.Movement and type(S.physics.Movement.tick) == "functi
 				input = { forward = fwd, strafe = strafe, jump = input.jump }
 			end
 		end
-		local r = S.orig.tick(state, input, world, p4)
-		if not S.killed and input and isLocalState(state) then
+		return S.orig.tick(state, input, world, p4)
+	end
+	S.hookStatus.tick = true
+end
+
+-- Fly + Spider: the LOCAL player's movement runs through Sprint.playerTick
+-- (Simulation line ~2178), never Movement.tick directly — hook it and it's
+-- local-only by construction. While it runs, S.inLocal marks the local sim
+-- state for the Noclip hook on Collision.move.
+if S.physics and S.physics.Sprint and type(S.physics.Sprint.playerTick) == "function" then
+	S.orig.playerTick = S.physics.Sprint.playerTick
+	S.physics.Sprint.playerTick = function(state, controls, world)
+		S.inLocal = true
+		local r = S.orig.playerTick(state, controls, world)
+		S.inLocal = false
+		if not S.killed and controls then
 			if S.FEATURES.fly then
-				-- cancel gravity and drive height from jump/sneak
 				local FLY = S.VALUES.flySpeed
-				state.y = state.y + (input.jump and FLY or 0) - (state.sneaking and FLY or 0)
+				state.y = state.y + (controls.jump and FLY or 0) - (state.sneaking and FLY or 0)
 				state.vy = 0
 				state.onGround = false
 			elseif S.FEATURES.spider and state.collidedHorizontally and not state.onGround then
@@ -80,14 +82,14 @@ if S.physics and S.physics.Movement and type(S.physics.Movement.tick) == "functi
 		end
 		return r
 	end
-	S.hookStatus.tick = true
+	S.hookStatus.playerTick = true
 end
 
--- Noclip: skip block collision for the local player
+-- Noclip: skip block collision while the local player's tick is running
 if S.physics and S.physics.Collision and type(S.physics.Collision.move) == "function" then
 	S.orig.collisionMove = S.physics.Collision.move
 	S.physics.Collision.move = function(state, world, dx, dy, dz, trace)
-		if S.FEATURES.noclip and not S.killed and isLocalState(state) then
+		if S.FEATURES.noclip and not S.killed and S.inLocal then
 			state.x = state.x + dx
 			state.y = state.y + dy
 			state.z = state.z + dz

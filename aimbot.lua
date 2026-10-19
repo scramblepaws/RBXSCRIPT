@@ -46,6 +46,7 @@ S.killed = false
 S.target, S.targetDist, S.targetPos = nil, nil, nil
 S.aimPoint = nil
 S.lastClick = 0
+S.inLocal = false
 
 local ORDER = {
 	"lib", "targets", "patches", "features_combat", "features_movement",
