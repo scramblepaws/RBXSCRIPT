@@ -76,6 +76,31 @@ do
 	end
 end
 
+-- fallback: Konstant's server-side decompiler (needs executor `request`)
+local requestFn = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+local KONSTANT_URL = "http://api.plusgiant5.com/konstant/decompile"
+
+local function konstantDecompile(inst)
+	if type(requestFn) ~= "function" or type(getscriptbytecode) ~= "function" then
+		return nil
+	end
+	local ok, bc = pcall(getscriptbytecode, inst)
+	if not ok or type(bc) ~= "string" or #bc == 0 then
+		return nil
+	end
+	task.wait(0.55) -- their API is rate limited to 2/s
+	local ok2, res = pcall(requestFn, {
+		Url = KONSTANT_URL,
+		Method = "POST",
+		Body = bc,
+		Headers = { ["Content-Type"] = "text/plain" },
+	})
+	if ok2 and res and res.StatusCode == 200 and type(res.Body) == "string" and #res.Body > 0 then
+		return res.Body
+	end
+	return nil
+end
+
 --------------------------------------------------------------------
 -- Walk the client's scripts
 --------------------------------------------------------------------
@@ -121,6 +146,12 @@ for _, entry in ipairs(scripts) do
 		local ok, res = pcall(decompile, entry.inst)
 		if ok and type(res) == "string" and #res > 0 then
 			src = res
+		end
+	end
+	if not src then
+		local viaKonstant = konstantDecompile(entry.inst)
+		if viaKonstant then
+			src = "-- [via konstant api]\n" .. viaKonstant
 		end
 	end
 	if src then
