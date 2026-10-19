@@ -1024,8 +1024,8 @@ local function buildGui()
 	sbList.Padding = UDim.new(0, 2)
 	sbList.Parent = guiSidebar
 	local sbPad = Instance.new("UIPadding")
-	sbPad.PaddingTop = 6
-	sbPad.PaddingLeft = 6
+	sbPad.PaddingTop = UDim.new(0, 6)
+	sbPad.PaddingLeft = UDim.new(0, 6)
 	sbPad.Parent = guiSidebar
 
 	guiPane = Instance.new("Frame")
@@ -1038,9 +1038,9 @@ local function buildGui()
 	paneList.Padding = UDim.new(0, 4)
 	paneList.Parent = guiPane
 	local panePad = Instance.new("UIPadding")
-	panePad.PaddingTop = 8
-	panePad.PaddingLeft = 8
-	panePad.PaddingRight = 8
+	panePad.PaddingTop = UDim.new(0, 8)
+	panePad.PaddingLeft = UDim.new(0, 8)
+	panePad.PaddingRight = UDim.new(0, 8)
 	panePad.Parent = guiPane
 
 	renderSidebar()
