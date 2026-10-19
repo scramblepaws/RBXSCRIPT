@@ -41,7 +41,7 @@ local BINDS = {
 	gui = Enum.KeyCode.RightShift,
 }
 
-local WATERMARK_TEXT = "Astolfo"
+local WATERMARK_TEXT = "astolfo"
 
 --------------------------------------------------------------------
 -- Services
@@ -443,7 +443,8 @@ end
 
 local RENDER_NAME = "AstolfoClient"
 local drawings = {}
-local label, wm
+local label, wmPanel
+local wmLetters = {}
 local boxPool, tracerPool, hpBgPool, hpFgPool = {}, {}, {}, {}
 local moduleTexts, hudPanel, hudName, hudHpText, hudBarBg, hudBarFill, hudDist
 
@@ -460,14 +461,25 @@ do
 		label.Visible = false
 		drawings[#drawings + 1] = label
 
-		wm = Drawing.new("Text")
-		wm.Text = WATERMARK_TEXT
-		wm.Size = 40
-		wm.Center = false
-		wm.Outline = true
-		wm.Color = Color3.fromRGB(255, 158, 208)
-		wm.Visible = FEATURES.watermark
-		drawings[#drawings + 1] = wm
+		wmPanel = Drawing.new("Square")
+		wmPanel.Filled = true
+		wmPanel.Color = Color3.fromRGB(10, 10, 10)
+		wmPanel.Transparency = 0.5
+		wmPanel.Visible = FEATURES.watermark
+		drawings[#drawings + 1] = wmPanel
+
+		-- "astolfo" letter by letter so the pink->lavender wave can flow across it
+		for i = 1, #WATERMARK_TEXT do
+			local d = Drawing.new("Text")
+			d.Text = WATERMARK_TEXT:sub(i, i)
+			d.Size = 26
+			d.Outline = true
+			d.Color = Color3.fromRGB(255, 158, 208)
+			d.Position = Vector2.new(10 + (i - 1) * 16, 8)
+			d.Visible = FEATURES.watermark
+			drawings[#drawings + 1] = d
+			wmLetters[#wmLetters + 1] = d
+		end
 
 		for _ = 1, 24 do
 			local sq = Drawing.new("Square")
@@ -560,23 +572,26 @@ do
 	end
 end
 
-local wmClock, wmX = 0, -300
-local function stepWatermark(dt)
-	if not wm or not wm.Visible then
-		return
+local wmClock = 0
+local function setWmVisible(v)
+	if wmPanel then
+		wmPanel.Visible = v
 	end
+	for _, d in ipairs(wmLetters) do
+		d.Visible = v
+	end
+end
+
+-- chroma wave: pink -> lavender flows left to right across the letters
+local function stepWatermark(dt)
 	dt = dt or 0
 	wmClock = wmClock + dt
-	local screenW = (Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize.X) or 1920
-	local width = math.max(#wm.Text * 40 * 0.6, 120)
-	wmX = wmX + 140 * dt
-	if wmX > screenW then
-		wmX = -width
+	for i, d in ipairs(wmLetters) do
+		if d.Visible then
+			local u = (wmClock * 0.35 - i * 0.13) % 1
+			d.Color = Color3.fromRGB(255, 158, 208):Lerp(Color3.fromRGB(180, 155, 255), u)
+		end
 	end
-	local t = (math.sin(wmClock * 2) + 1) / 2
-	wm.Position = Vector2.new(wmX, 10)
-	wm.Size = 40 + t * 4
-	wm.Color = Color3.fromRGB(255, 158, 208):Lerp(Color3.fromRGB(180, 155, 255), t)
 end
 
 -- bright glow around the KillAura target (visible through walls)
@@ -612,25 +627,32 @@ local MODULE_HUD_ORDER = {
 	{ name = "ESP", get = function() return FEATURES.esp end },
 }
 
-local moduleHudClock = 0
 local function updateModuleHud(dt)
 	if not moduleTexts or #moduleTexts == 0 then
 		return
 	end
-	moduleHudClock = moduleHudClock + dt
 	local active = {}
 	for _, e in ipairs(MODULE_HUD_ORDER) do
 		if e.get() then
 			active[#active + 1] = e.name
 		end
 	end
+	-- black backdrop behind the watermark + list
+	if wmPanel then
+		local on = FEATURES.watermark or #active > 0
+		wmPanel.Visible = on
+		wmPanel.Size = Vector2.new(168, 30 + #active * 18)
+		wmPanel.Position = Vector2.new(4, 4)
+	end
 	for i = 1, #moduleTexts do
 		local d = moduleTexts[i]
 		if i <= #active then
 			d.Text = active[i]
-			local c = 0.5 + 0.5 * math.sin(moduleHudClock * 1.4 + i * 0.8)
-			d.Color = Color3.fromRGB(255, 158, 208):Lerp(Color3.fromRGB(180, 155, 255), c)
-			d.Position = Vector2.new(8, 56 + (i - 1) * 20)
+			-- same chroma wave as the logo, flowing down the list
+			local u = (wmClock * 0.35 - (i + 2) * 0.13) % 1
+			d.Color = Color3.fromRGB(255, 158, 208):Lerp(Color3.fromRGB(180, 155, 255), u)
+			d.Position = Vector2.new(10, 38 + (i - 1) * 18)
+			d.Size = 14
 			d.Visible = true
 		else
 			d.Visible = false
@@ -873,9 +895,7 @@ local MODULES = {
 	{ cat = "Render", name = "ESP", get = function() return FEATURES.esp end, set = function(v) FEATURES.esp = v end },
 	{ cat = "Render", name = "Watermark", get = function() return FEATURES.watermark end, set = function(v)
 		FEATURES.watermark = v
-		if wm then
-			wm.Visible = v
-		end
+		setWmVisible(v)
 	end },
 	{ cat = "Client", name = "Keybinds", rows = {
 		{ type = "bind", label = "Aura", get = function() return BINDS.aura end, set = function(k) BINDS.aura = k end },
