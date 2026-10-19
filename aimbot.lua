@@ -897,7 +897,9 @@ end
 
 local function clearChildren(c)
 	for _, ch in ipairs(c:GetChildren()) do
-		ch:Destroy()
+		if not ch:IsA("UILayout") and not ch:IsA("UIPadding") then
+			ch:Destroy()
+		end
 	end
 end
 
