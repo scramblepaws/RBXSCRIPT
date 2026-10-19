@@ -8,7 +8,9 @@
 --------------------------------------------------------------------
 
 local CONFIG = {
-	BIND = Enum.KeyCode.F, -- toggle
+	BIND = Enum.KeyCode.F, -- toggle aim+click
+	KILL_BIND = Enum.KeyCode.L, -- insta-kill the current target (burst click)
+	SPEED_BIND = Enum.KeyCode.G, -- toggle movement speed boost
 	RANGE = 60, -- studs
 	INCLUDE_BOTS = true, -- `MCBody Bot####` models are valid targets
 	LOCAL_MODEL_NAME = "MCBody", -- your own avatar model (others are `MCBody <id>`)
@@ -16,6 +18,8 @@ local CONFIG = {
 	AIM_WHOLE_BODY = true, -- yaw the body too, not just the head
 	AUTO_CLICK = true, -- click at the target while aiming
 	CLICK_INTERVAL = 0.2, -- seconds between clicks
+	KILL_BURST = 1.5, -- seconds of max-rate clicking when L is pressed
+	SPEED_BONUS = 30, -- extra studs/second while moving (boost toggled with G)
 	BOX_COLOR = Color3.fromRGB(255, 60, 60),
 	BOX_THICKNESS = 2,
 }
@@ -228,11 +232,42 @@ end
 --------------------------------------------------------------------
 
 local enabled = false
+local speedOn = false
 local target, targetHead, targetDist
 local lastClick = 0
 local clickCount = 0
+local burstUntil = 0
 
-local function step()
+-- shove the avatar forward with WASD, camera-relative. No Humanoid, so we move the root.
+local function applySpeed(dt, model, camera)
+	if not speedOn or not model or not camera then
+		return
+	end
+	local dir = Vector3.zero
+	if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+		dir = dir + camera.CFrame.LookVector
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+		dir = dir - camera.CFrame.LookVector
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+		dir = dir + camera.CFrame.RightVector
+	end
+	if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+		dir = dir - camera.CFrame.RightVector
+	end
+	dir = Vector3.new(dir.X, 0, dir.Z)
+	if dir.Magnitude < 0.01 then
+		return
+	end
+	local root = findRoot(model) or model.PrimaryPart
+	if not root then
+		return
+	end
+	root.CFrame = root.CFrame + dir.Unit * (CONFIG.SPEED_BONUS * dt)
+end
+
+local function step(dt)
 	local camera = Workspace.CurrentCamera
 	target, targetDist, targetHead = findTarget()
 
@@ -242,11 +277,18 @@ local function step()
 		screenPos = onScreen and p or nil
 	end
 
+	local model = localModel()
+	if dt then
+		applySpeed(dt, model, camera)
+	end
+
 	if enabled and targetHead then
-		AimModel(localModel(), targetHead)
-		if CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
+		AimModel(model, targetHead)
+		local bursting = tick() < burstUntil
+		if bursting or (CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL) then
 			lastClick = tick()
-			local cx, cy = (camera and camera.ViewportSize.X / 2) or 0, (camera and camera.ViewportSize.Y / 2) or 0
+			local cx = camera and camera.ViewportSize.X / 2 or 0
+			local cy = camera and camera.ViewportSize.Y / 2 or 0
 			if screenPos then
 				cx, cy = screenPos.X, screenPos.Y
 			end
@@ -291,6 +333,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		enabled = not enabled
 		print("[Aim] " .. (enabled and "ON" or "OFF")
 			.. (target and (" — target " .. target.Name .. " @ " .. math.floor(targetDist or 0)) or " — no target in range"))
+	elseif input.KeyCode == CONFIG.KILL_BIND then
+		burstUntil = tick() + CONFIG.KILL_BURST
+		enabled = true -- make sure we're aiming/clicking
+		print("[Aim] KILL burst " .. CONFIG.KILL_BURST .. "s on "
+			.. (target and target.Name or "nothing in range") .. " (clicks so far: " .. clickCount .. ")")
+	elseif input.KeyCode == CONFIG.SPEED_BIND then
+		speedOn = not speedOn
+		print("[Aim] speed boost " .. (speedOn and "ON (+" .. CONFIG.SPEED_BONUS .. " studs/s)" or "OFF"))
 	end
 end)
 
@@ -330,5 +380,6 @@ task.spawn(function()
 		.. "  parts: " .. tostring(model and #model:GetChildren() or 0))
 	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
 		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
-	print("[Aim] Ready — press " .. CONFIG.BIND.Name .. " to toggle aim+click.")
+	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.KILL_BIND.Name
+		.. " kill burst | " .. CONFIG.SPEED_BIND.Name .. " speed boost")
 end)
