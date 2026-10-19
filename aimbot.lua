@@ -445,6 +445,7 @@ local RENDER_NAME = "AstolfoClient"
 local drawings = {}
 local label, wm
 local boxPool, tracerPool, hpBgPool, hpFgPool = {}, {}, {}, {}
+local moduleTexts, hudPanel, hudName, hudHpText, hudBarBg, hudBarFill, hudDist
 
 do
 	local ok = pcall(function()
@@ -464,7 +465,7 @@ do
 		wm.Size = 40
 		wm.Center = false
 		wm.Outline = true
-		wm.Color = Color3.fromRGB(40, 170, 255)
+		wm.Color = Color3.fromRGB(255, 158, 208)
 		wm.Visible = FEATURES.watermark
 		drawings[#drawings + 1] = wm
 
@@ -500,6 +501,59 @@ do
 			drawings[#drawings + 1] = hfg
 			hpFgPool[#hpFgPool + 1] = hfg
 		end
+
+		-- active module list (gradient cycling pink <-> lavender)
+		moduleTexts = {}
+		for _ = 1, 12 do
+			local d = Drawing.new("Text")
+			d.Size = 15
+			d.Outline = true
+			d.Visible = false
+			drawings[#drawings + 1] = d
+			moduleTexts[#moduleTexts + 1] = d
+		end
+
+		-- TargetHUD (bottom-left panel: name, smooth health bar, distance)
+		hudPanel = Drawing.new("Square")
+		hudPanel.Filled = true
+		hudPanel.Color = Color3.fromRGB(8, 8, 12)
+		hudPanel.Transparency = 0.4
+		hudPanel.Visible = false
+		drawings[#drawings + 1] = hudPanel
+
+		hudName = Drawing.new("Text")
+		hudName.Size = 15
+		hudName.Outline = true
+		hudName.Color = Color3.fromRGB(240, 240, 245)
+		hudName.Visible = false
+		drawings[#drawings + 1] = hudName
+
+		hudDist = Drawing.new("Text")
+		hudDist.Size = 12
+		hudDist.Center = true
+		hudDist.Outline = true
+		hudDist.Color = Color3.fromRGB(255, 158, 208)
+		hudDist.Visible = false
+		drawings[#drawings + 1] = hudDist
+
+		hudBarBg = Drawing.new("Square")
+		hudBarBg.Filled = true
+		hudBarBg.Color = Color3.fromRGB(30, 30, 40)
+		hudBarBg.Visible = false
+		drawings[#drawings + 1] = hudBarBg
+
+		hudBarFill = Drawing.new("Square")
+		hudBarFill.Filled = true
+		hudBarFill.Color = Color3.fromRGB(255, 158, 208)
+		hudBarFill.Visible = false
+		drawings[#drawings + 1] = hudBarFill
+
+		hudHpText = Drawing.new("Text")
+		hudHpText.Size = 12
+		hudHpText.Outline = true
+		hudHpText.Color = Color3.fromRGB(220, 220, 230)
+		hudHpText.Visible = false
+		drawings[#drawings + 1] = hudHpText
 	end)
 	if not ok then
 		warn("[Astolfo] Drawing API unavailable — no ESP/watermark.")
@@ -522,7 +576,7 @@ local function stepWatermark(dt)
 	local t = (math.sin(wmClock * 2) + 1) / 2
 	wm.Position = Vector2.new(wmX, 10)
 	wm.Size = 40 + t * 4
-	wm.Color = Color3.fromRGB(40, 170, 255):Lerp(Color3.fromRGB(6, 30, 90), t)
+	wm.Color = Color3.fromRGB(255, 158, 208):Lerp(Color3.fromRGB(180, 155, 255), t)
 end
 
 -- bright glow around the KillAura target (visible through walls)
@@ -545,6 +599,93 @@ local function stepGlow()
 	elseif glow then
 		glow.Parent = nil
 	end
+end
+
+-- active module list: gradient cycling pink <-> lavender, Astolfo-style
+local MODULE_HUD_ORDER = {
+	{ name = "KillAura", get = function() return FEATURES.aura end },
+	{ name = "Velocity", get = function() return FEATURES.velocity end },
+	{ name = "Speed", get = function() return FEATURES.speed end },
+	{ name = "TargetStrafe", get = function() return FEATURES.strafe end },
+	{ name = "Bhop", get = function() return FEATURES.bhop end },
+	{ name = "NoSlow", get = function() return FEATURES.noslow end },
+	{ name = "ESP", get = function() return FEATURES.esp end },
+}
+
+local moduleHudClock = 0
+local function updateModuleHud(dt)
+	if not moduleTexts or #moduleTexts == 0 then
+		return
+	end
+	moduleHudClock = moduleHudClock + dt
+	local active = {}
+	for _, e in ipairs(MODULE_HUD_ORDER) do
+		if e.get() then
+			active[#active + 1] = e.name
+		end
+	end
+	for i = 1, #moduleTexts do
+		local d = moduleTexts[i]
+		if i <= #active then
+			d.Text = active[i]
+			local c = 0.5 + 0.5 * math.sin(moduleHudClock * 1.4 + i * 0.8)
+			d.Color = Color3.fromRGB(255, 158, 208):Lerp(Color3.fromRGB(180, 155, 255), c)
+			d.Position = Vector2.new(8, 56 + (i - 1) * 20)
+			d.Visible = true
+		else
+			d.Visible = false
+		end
+	end
+end
+
+-- TargetHUD: name, smooth health bar with damage flash, distance
+local hudHpShown = 20
+local hudFlash = 0
+local function updateTargetHud(dt)
+	local show = not killed and FEATURES.aura and target
+	if not (hudPanel and hudName) then
+		return
+	end
+	if not show then
+		hudPanel.Visible = false
+		hudName.Visible = false
+		hudDist.Visible = false
+		hudBarBg.Visible = false
+		hudBarFill.Visible = false
+		hudHpText.Visible = false
+		return
+	end
+	local hp = targetAttr(target, "Health")
+	if hp then
+		if hp < hudHpShown - 0.01 then
+			hudFlash = 0.3
+		end
+		hudHpShown = hudHpShown + (hp - hudHpShown) * math.min(1, dt * 8)
+	else
+		hudHpShown = 20
+	end
+	hudFlash = math.max(0, hudFlash - dt)
+	local vp = Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+	local px, py = 10, vp.Y - 110
+	hudPanel.Size = Vector2.new(230, 84)
+	hudPanel.Position = Vector2.new(px, py)
+	hudPanel.Visible = true
+	hudName.Position = Vector2.new(px + 14, py + 10)
+	hudName.Text = target.Name
+	hudName.Visible = true
+	hudDist.Position = Vector2.new(px + 214, py + 14)
+	hudDist.Text = math.floor(targetDist or 0) .. "m"
+	hudDist.Visible = true
+	hudBarBg.Size = Vector2.new(200, 10)
+	hudBarBg.Position = Vector2.new(px + 14, py + 42)
+	hudBarBg.Visible = true
+	hudBarFill.Size = Vector2.new(math.max(0, 200 * math.clamp(hudHpShown / 20, 0, 1)), 10)
+	hudBarFill.Position = Vector2.new(px + 14, py + 42)
+	hudBarFill.Color = hudFlash > 0 and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(255, 158, 208)
+	hudBarFill.Visible = true
+	hudHpText.Position = Vector2.new(px + 14, py + 58)
+	hudHpText.Text = string.format("%.1f / 20", hudHpShown)
+	hudHpText.Visible = true
 end
 
 local function step(dt)
@@ -577,6 +718,8 @@ local function step(dt)
 
 	stepWatermark(dt)
 	stepGlow()
+	updateModuleHud(dt)
+	updateTargetHud(dt)
 
 	local screenPos
 	if targetPos and camera then
@@ -676,14 +819,22 @@ end
 -- GUI
 --------------------------------------------------------------------
 
-local ACCENT = Color3.fromRGB(94, 160, 255)
-local PANEL = Color3.fromRGB(18, 18, 26)
-local PANEL2 = Color3.fromRGB(27, 27, 38)
-local TEXT = Color3.fromRGB(225, 225, 230)
-local DIM = Color3.fromRGB(140, 140, 150)
+local ACCENT = Color3.fromRGB(255, 158, 208) -- bubblegum pink
+local ACCENT2 = Color3.fromRGB(180, 155, 255) -- lavender
+local PANEL = Color3.fromRGB(11, 11, 15) -- deep black
+local PANEL2 = Color3.fromRGB(22, 22, 30)
+local TEXT = Color3.fromRGB(235, 235, 240)
+local DIM = Color3.fromRGB(150, 140, 160)
 local guiRoot, guiSidebar, guiPane
 local capturingBind = nil
 local guiSelected = { cat = "Combat", name = "KillAura" }
+
+-- pill-shaped corners for the Astolfo look
+local function pill(inst, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius or 14)
+	c.Parent = inst
+end
 
 local MODULES = {
 	{ cat = "Combat", name = "KillAura", get = function() return FEATURES.aura end, set = function(v)
@@ -763,6 +914,7 @@ local function renderSidebar()
 		catBtn.Font = Enum.Font.GothamBold
 		catBtn.BorderSizePixel = 0
 		catBtn.AutoButtonColor = false
+		pill(catBtn, 10)
 		catBtn.MouseButton1Click:Connect(function()
 			guiSelected.cat = cat
 			local first
@@ -790,6 +942,13 @@ local function renderSidebar()
 				row.TextSize = 13
 				row.BorderSizePixel = 0
 				row.AutoButtonColor = false
+				pill(row, 12)
+				if on then
+					local g = Instance.new("UIGradient")
+					g.Color = ColorSequence.new(ACCENT2, ACCENT)
+					g.Parent = row
+					row.BackgroundColor3 = Color3.new(1, 1, 1)
+				end
 				row.MouseButton1Click:Connect(function()
 					guiSelected = { cat = cat, name = m.name }
 					if m.set then
@@ -821,13 +980,19 @@ local function renderRow(spec)
 		local function refresh()
 			local on = spec.get()
 			b.Text = on and "ON" or "OFF"
-			b.BackgroundColor3 = on and ACCENT or PANEL2
-			b.TextColor3 = on and Color3.fromRGB(10, 10, 14) or TEXT
+			if on then
+				b.BackgroundColor3 = ACCENT
+				b.TextColor3 = Color3.fromRGB(12, 12, 16)
+			else
+				b.BackgroundColor3 = PANEL2
+				b.TextColor3 = DIM
+			end
 		end
 		refresh()
 		b.BorderSizePixel = 0
 		b.AutoButtonColor = false
 		b.TextSize = 13
+		pill(b, 14)
 		b.MouseButton1Click:Connect(function()
 			spec.set(not spec.get())
 			refresh()
@@ -844,6 +1009,7 @@ local function renderRow(spec)
 		minus.TextColor3 = TEXT
 		minus.BorderSizePixel = 0
 		minus.TextSize = 13
+		pill(minus, 10)
 		minus.Parent = frame
 		local value = Instance.new("TextButton")
 		value.Size = UDim2.new(1, -56, 1, 0)
@@ -854,6 +1020,7 @@ local function renderRow(spec)
 		value.BorderSizePixel = 0
 		value.AutoButtonColor = false
 		value.TextSize = 13
+		pill(value, 10)
 		value.Parent = frame
 		local plus = Instance.new("TextButton")
 		plus.Size = UDim2.new(0, 26, 1, 0)
@@ -863,6 +1030,7 @@ local function renderRow(spec)
 		plus.TextColor3 = TEXT
 		plus.BorderSizePixel = 0
 		plus.TextSize = 13
+		pill(plus, 10)
 		plus.Parent = frame
 		local function refresh()
 			value.Text = tostring(spec.get())
@@ -884,6 +1052,7 @@ local function renderRow(spec)
 		b.BorderSizePixel = 0
 		b.AutoButtonColor = false
 		b.TextSize = 13
+		pill(b, 14)
 		b.MouseButton1Click:Connect(function()
 			local i = 1
 			for idx, o in ipairs(spec.options) do
@@ -904,6 +1073,7 @@ local function renderRow(spec)
 		b.BorderSizePixel = 0
 		b.AutoButtonColor = false
 		b.TextSize = 13
+		pill(b, 14)
 		b.MouseButton1Click:Connect(function()
 			capturingBind = { button = b, set = spec.set }
 			b.Text = "..."
@@ -912,11 +1082,12 @@ local function renderRow(spec)
 	elseif spec.type == "unload" then
 		local b = Instance.new("TextButton")
 		b.Text = "Unload"
-		b.BackgroundColor3 = Color3.fromRGB(120, 30, 30)
+		b.BackgroundColor3 = Color3.fromRGB(140, 40, 70)
 		b.TextColor3 = TEXT
 		b.BorderSizePixel = 0
 		b.AutoButtonColor = false
 		b.TextSize = 13
+		pill(b, 14)
 		b.MouseButton1Click:Connect(unload)
 		return b
 	end
@@ -987,17 +1158,20 @@ local function buildGui()
 	title.Size = UDim2.new(0, 160, 1, 0)
 	title.Position = UDim2.new(0, 10, 0, 0)
 	title.Text = "ASTOLFO"
-	title.TextColor3 = ACCENT
+	title.TextColor3 = Color3.new(1, 1, 1)
 	title.TextSize = 15
 	title.Font = Enum.Font.GothamBold
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.BackgroundTransparency = 1
 	title.Parent = titleBar
+	local titleGrad = Instance.new("UIGradient")
+	titleGrad.Color = ColorSequence.new(ACCENT2, ACCENT)
+	titleGrad.Parent = title
 
 	local version = Instance.new("TextLabel")
 	version.Size = UDim2.new(0, 60, 1, 0)
 	version.Position = UDim2.new(0, 90, 0, 0)
-	version.Text = "v5"
+	version.Text = "v6"
 	version.TextColor3 = DIM
 	version.TextSize = 11
 	version.BackgroundTransparency = 1
@@ -1012,6 +1186,7 @@ local function buildGui()
 	close.BackgroundColor3 = PANEL2
 	close.BorderSizePixel = 0
 	close.AutoButtonColor = false
+	pill(close, 10)
 	close.MouseButton1Click:Connect(toggleGui)
 	close.Parent = titleBar
 
