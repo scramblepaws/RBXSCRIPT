@@ -61,8 +61,8 @@ end
 
 local decompile
 do
-	-- the decompiler assigns a global `decompile` rather than returning one.
-	-- ponytail: `_ENV` is nil on Potassium's main chunk, so look it up in the env tables.
+	-- ponytail: prefer the EXECUTOR's native decompile — the external one rejects this
+	-- game's bytecode version ("PASSED BYTECODE IS TOO OLD AND IS NOT SUPPORTED").
 	local function findDecompile()
 		local candidates = {}
 		if getgenv then
@@ -83,16 +83,21 @@ do
 		return nil
 	end
 
-	local ok, err = pcall(function()
-		loadstring(game:HttpGet(DECOMPILER_URL, true))()
-	end)
 	decompile = findDecompile()
-	if type(decompile) ~= "function" then
-		decompile = nil
-		say("decompiler unavailable: " .. tostring(err)
-			.. " (getscriptbytecode=" .. tostring(type(getscriptbytecode) == "function") .. ")")
+	if type(decompile) == "function" then
+		say("using executor's native decompile")
 	else
-		say("decompiler loaded")
+		local ok, err = pcall(function()
+			loadstring(game:HttpGet(DECOMPILER_URL, true))()
+		end)
+		decompile = findDecompile()
+		if type(decompile) ~= "function" then
+			decompile = nil
+			say("decompiler unavailable: " .. tostring(err)
+				.. " (getscriptbytecode=" .. tostring(type(getscriptbytecode) == "function") .. ")")
+		else
+			say("using external decompiler")
+		end
 	end
 end
 
