@@ -141,13 +141,17 @@ local function targetCandidates()
 end
 
 -- The camera is Scriptable and unreliable in this game; the sim keeps the real
--- position in the player's own attributes, so measure from those.
+-- position in the player's own attributes — in BLOCK units. Render models are in
+-- studs: studs = blocks * STUDS_PER_BLOCK + Map.Origin. Values assigned below
+-- once the modules are loaded.
+local SPB, mapOrigin
+
 local function selfPos()
 	local x = player:GetAttribute("X")
 	local y = player:GetAttribute("Y")
 	local z = player:GetAttribute("Z")
 	if x then
-		return Vector3.new(x, y or 0, z or 0)
+		return Vector3.new(x, y or 0, z or 0) * SPB + mapOrigin
 	end
 	local camera = Workspace.CurrentCamera
 	return camera and camera.CFrame.Position or Vector3.zero
@@ -202,6 +206,16 @@ local physics = requireShared("MCPhysics")
 local aimAssist = requireShared("AimAssist")
 local inputs = requireShared("Net/Inputs")
 local kbDelay = requireShared("KbDelay")
+
+SPB = (physics and physics.Constants and physics.Constants.STUDS_PER_BLOCK) or 3.5714
+do
+	local cfg = requireShared("Config")
+	if cfg and cfg.Map and cfg.Map.Origin then
+		mapOrigin = cfg.Map.Origin
+	else
+		mapOrigin = Vector3.zero
+	end
+end
 
 local orig = {} -- original functions, restored on unload
 
@@ -278,8 +292,9 @@ if inputs and type(inputs.fireLook) == "function" and aimAssist then
 			local ey = player:GetAttribute("Y")
 			local ez = player:GetAttribute("Z")
 			if ex then
-				local cy = targetPos.Y - 0.8 -- head -> box center
-				local dyaw, dpitch = aimAssist.anglesTo(ex, ey + 1.62, ez, targetPos.X, cy, targetPos.Z)
+				local exs = Vector3.new(ex, ey or 0, ez or 0) * SPB + mapOrigin
+				local cy = targetPos.Y - 0.75 * SPB -- head -> box center
+				local dyaw, dpitch = aimAssist.anglesTo(exs.X, exs.Y, exs.Z, targetPos.X, cy, targetPos.Z)
 				local dY = ((dyaw - yaw + 180) % 360) - 180
 				local dP = math.clamp(dpitch - pitch, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
 				yaw = yaw + math.clamp(dY, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
@@ -295,11 +310,13 @@ end
 if physics and physics.Combat and type(physics.Combat.rayHit) == "function" and aimAssist then
 	orig.rayHit = physics.Combat.rayHit
 	physics.Combat.rayHit = function(x, y, z, yaw, pitch, box, reach)
+		-- x/y/z and box are in BLOCK units; convert the target position to blocks
 		if not killed and FEATURES.aura and targetPos and box then
 			local cx = (box.minX + box.maxX) / 2
 			local cy = (box.minY + box.maxY) / 2
 			local cz = (box.minZ + box.maxZ) / 2
-			local off = Vector3.new(cx - targetPos.X, cy - (targetPos.Y - 0.8), cz - targetPos.Z).Magnitude
+			local tb = (targetPos - mapOrigin) / SPB
+			local off = Vector3.new(cx - tb.X, cy - tb.Y, cz - tb.Z).Magnitude
 			if off < 1.2 then
 				yaw, pitch = aimAssist.anglesTo(x, y, z, cx, cy, cz)
 			end
@@ -375,7 +392,7 @@ if inputs and type(inputs.fireHeld) == "function" then
 		if not killed and held and UserInputService:GetFocusedTextBox() == nil then
 			local strafing = FEATURES.strafe and FEATURES.aura and targetPos ~= nil
 			if strafing then
-				held.Forward = (targetDist or 0) > 4.5
+				held.Forward = (targetDist or 0) > VALUES.attackDist * SPB * 1.2
 				held.Back = false
 				held.Left = true
 				held.Right = false
@@ -590,7 +607,7 @@ local function step(dt)
 	end
 
 	if FEATURES.aura and targetPos and camera
-		and (targetDist or math.huge) <= VALUES.attackDist
+		and (targetDist or math.huge) <= VALUES.attackDist * SPB
 		and tick() - lastClick >= 1 / VALUES.cps then
 		lastClick = tick()
 		click(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -734,7 +751,7 @@ local function buildGui()
 		VALUES.reach = v
 		applyReach(v)
 	end, 2.5, 4, 0.1)
-	addSliderRow("AttackDist", function() return VALUES.attackDist end, function(v) VALUES.attackDist = v end, 2.5, 4.5, 0.1)
+	addSliderRow("AttackDist blk", function() return VALUES.attackDist end, function(v) VALUES.attackDist = v end, 2.5, 4.5, 0.1)
 	addCycleRow("Targets", function() return VALUES.targets end, function(v) VALUES.targets = v end, { "All", "Players", "Bots" })
 	addToggleRow("Glow target", function() return FEATURES.glow end, function(v) FEATURES.glow = v end)
 	addToggleRow("TargetStrafe", function() return FEATURES.strafe end, function(v)
