@@ -49,6 +49,10 @@ local function step(dt)
 		and tick() - S.lastClick >= 1 / S.VALUES.cps then
 		S.lastClick = tick()
 		S.click(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+	elseif S.FEATURES.autoclick and not S.FEATURES.aura and camera
+		and tick() - S.lastClick >= 1 / S.VALUES.cps then
+		S.lastClick = tick()
+		S.click(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
 	end
 end
 
@@ -94,6 +98,11 @@ function S.unload()
 	if S.guiRoot then
 		S.guiRoot:Destroy()
 	end
+	pcall(function()
+		if S.Rayfield then
+			S.Rayfield:Destroy()
+		end
+	end)
 	-- restore hooked functions
 	if S.inputs then
 		if S.orig.fireLook then S.inputs.fireLook = S.orig.fireLook end
@@ -143,8 +152,6 @@ connections[#connections + 1] = UserInputService.InputBegan:Connect(function(inp
 		print("[Astolfo] Speed " .. (S.FEATURES.speed and ("ON x" .. S.VALUES.speed) or "OFF"))
 	elseif input.KeyCode == S.BINDS.kill then
 		S.unload()
-	elseif input.KeyCode == S.BINDS.gui then
-		S.toggleGui()
 	end
 end)
 

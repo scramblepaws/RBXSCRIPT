@@ -3,6 +3,7 @@ local S = getgenv().Astolfo
 
 local label
 local boxPool, tracerPool, hpBgPool, hpFgPool = {}, {}, {}, {}
+local namePool = {}
 
 do
 	local ok = pcall(function()
@@ -18,6 +19,15 @@ do
 		S.drawings[#S.drawings + 1] = label
 
 		for _ = 1, 24 do
+			local nm = Drawing.new("Text")
+			nm.Size = 13
+			nm.Center = true
+			nm.Outline = true
+			nm.Color = Color3.fromRGB(230, 230, 235)
+			nm.Visible = false
+			S.drawings[#S.drawings + 1] = nm
+			namePool[#namePool + 1] = nm
+
 			local sq = Drawing.new("Square")
 			sq.Thickness = 2
 			sq.Filled = false
@@ -94,6 +104,7 @@ function S.stepEsp(dt)
 				tracerPool[i].Visible = false
 				hpBgPool[i].Visible = false
 				hpFgPool[i].Visible = false
+				namePool[i].Visible = false
 			end
 		end
 		if label then
@@ -107,7 +118,7 @@ function S.stepEsp(dt)
 	local vp = camera.ViewportSize
 	for i = 1, #boxPool do
 		local m = cands[i]
-		local sq, tr, hbg, hfg = boxPool[i], tracerPool[i], hpBgPool[i], hpFgPool[i]
+		local sq, tr, hbg, hfg, nm = boxPool[i], tracerPool[i], hpBgPool[i], hpFgPool[i], namePool[i]
 		if m then
 			local h = S.findHead(m)
 			if h and h.Parent then
@@ -123,6 +134,13 @@ function S.stepEsp(dt)
 					tr.From = Vector2.new(p.X, p.Y)
 					tr.To = Vector2.new(vp.X / 2, vp.Y)
 					tr.Visible = true
+					if S.FEATURES.nametags then
+						nm.Text = m.Name
+						nm.Position = Vector2.new(p.X, p.Y - size * 0.68 - 18)
+						nm.Visible = true
+					else
+						nm.Visible = false
+					end
 					local hp = S.targetHealth(m)
 					if hp then
 						local frac = math.clamp(hp / 20, 0, 1)
@@ -138,13 +156,13 @@ function S.stepEsp(dt)
 						hfg.Visible = false
 					end
 				else
-					sq.Visible, tr.Visible, hbg.Visible, hfg.Visible = false, false, false, false
+					sq.Visible, tr.Visible, hbg.Visible, hfg.Visible, nm.Visible = false, false, false, false, false
 				end
 			else
-				sq.Visible, tr.Visible, hbg.Visible, hfg.Visible = false, false, false, false
+				sq.Visible, tr.Visible, hbg.Visible, hfg.Visible, nm.Visible = false, false, false, false, false
 			end
 		else
-			sq.Visible, tr.Visible, hbg.Visible, hfg.Visible = false, false, false, false
+			sq.Visible, tr.Visible, hbg.Visible, hfg.Visible, nm.Visible = false, false, false, false, false
 		end
 	end
 	if label then

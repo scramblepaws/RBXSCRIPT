@@ -8,6 +8,16 @@ local S = getgenv().Astolfo
 
 local AIM_MAX_DEG_PER_FRAME = 11 -- ~700 deg/s at 60fps
 
+-- FOV filter: only aim when the target is within FOV degrees of the real look
+local function withinFov(realYaw, realPitch, dyaw, dpitch)
+	if S.VALUES.fov >= 360 then
+		return true
+	end
+	local dY = math.abs(((dyaw - realYaw + 180) % 360) - 180)
+	local dP = math.abs(dpitch - realPitch)
+	return math.sqrt(dY * dY + dP * dP) <= S.VALUES.fov
+end
+
 if S.inputs and type(S.inputs.fireLook) == "function" and S.aimAssist then
 	S.orig.fireLook = S.inputs.fireLook
 	S.inputs.fireLook = function(handles, yaw, pitch)
@@ -24,6 +34,9 @@ if S.inputs and type(S.inputs.fireLook) == "function" and S.aimAssist then
 				end
 				local exs = Vector3.new(ex, ey + 1.62, ez) * S.SPB + S.mapOrigin
 				local dyaw, dpitch = S.aimAssist.anglesTo(exs.X, exs.Y, exs.Z, tp.X, ty, tp.Z)
+				if not withinFov(yaw, pitch, dyaw, dpitch) then
+					return S.orig.fireLook(handles, yaw, pitch)
+				end
 				if S.VALUES.aimMode == "Smooth" then
 					local dY = ((dyaw - yaw + 180) % 360) - 180
 					local dP = math.clamp(dpitch - pitch, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)

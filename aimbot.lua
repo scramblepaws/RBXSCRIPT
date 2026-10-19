@@ -10,14 +10,16 @@ if type(S) ~= "table" or S.killed then
 		FEATURES = {
 			aura = false, velocity = false, noslow = false, bhop = false,
 			speed = false, glow = true, strafe = false, esp = true, watermark = true,
+			autoclick = false, nametags = true,
 		},
 		VALUES = {
 			cps = 10, range = 60, reach = 3.2, attackDist = 3.4,
 			speed = 2.5, kbKeep = 0, targets = "All", aimMode = "Instant",
+			fov = 360,
 		},
 		BINDS = {
 			aura = Enum.KeyCode.F, speed = Enum.KeyCode.G,
-			kill = Enum.KeyCode.L, gui = Enum.KeyCode.RightShift,
+			kill = Enum.KeyCode.L,
 		},
 		WATERMARK_TEXT = "astolfo",
 		orig = {},

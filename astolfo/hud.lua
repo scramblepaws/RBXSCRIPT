@@ -113,6 +113,7 @@ end
 
 local MODULE_HUD_ORDER = {
 	{ name = "KillAura", get = function() return S.FEATURES.aura end },
+	{ name = "AutoClicker", get = function() return S.FEATURES.autoclick end },
 	{ name = "Velocity", get = function() return S.FEATURES.velocity end },
 	{ name = "Speed", get = function() return S.FEATURES.speed end },
 	{ name = "TargetStrafe", get = function() return S.FEATURES.strafe end },
