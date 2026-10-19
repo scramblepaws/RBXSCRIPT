@@ -780,10 +780,11 @@ local function renderSidebar()
 		for _, m in ipairs(MODULES) do
 			if m.cat == cat then
 				local sel = guiSelected.name == m.name and guiSelected.cat == cat
+				local on = m.get and m.get()
 				local row = Instance.new("TextButton")
 				row.Size = UDim2.new(1, -12, 0, 24)
 				row.BackgroundColor3 = sel and PANEL2 or PANEL
-				row.TextColor3 = (sel and ACCENT) or (m.get() and Color3.fromRGB(150, 200, 255) or TEXT)
+				row.TextColor3 = (sel and ACCENT) or (on and Color3.fromRGB(150, 200, 255) or TEXT)
 				row.Text = m.name
 				row.TextXAlignment = Enum.TextXAlignment.Left
 				row.TextSize = 13
