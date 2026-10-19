@@ -79,8 +79,10 @@ end
 
 -- Your avatar is `MCBody <yourUserId>`. A plain `MCBody` also exists but it's an
 -- unpositioned template rig (every part sits at 0,0,0) — aiming that does nothing.
--- If your model hasn't spawned (lobby/spectate/respawn), fall back to the MCBody
--- nearest the camera, which is your avatar in third/first person.
+-- If your model hasn't spawned (lobby/spectate/respawn), fall back to an MCBody
+-- hugging the camera (that's you in 1st/3rd person) — must stay within 6 studs
+-- for two checks in a row so we never adopt a passing enemy.
+local fallbackModel, fallbackCount
 local function localModel()
 	local byId = Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
 	if byId and byId:IsA("Model") then
@@ -106,13 +108,25 @@ local function localModel()
 			local h = findHead(m)
 			if h and h.Parent then
 				local d = (h.Position - camPos).Magnitude
-				if d < 20 and d < (bestDist or math.huge) then
+				if d < 6 and d < (bestDist or math.huge) then
 					best, bestDist = m, d
 				end
 			end
 		end
 	end
-	return best
+	if not best then
+		fallbackModel, fallbackCount = nil, 0
+		return nil
+	end
+	if best == fallbackModel then
+		fallbackCount = fallbackCount + 1
+	else
+		fallbackModel, fallbackCount = best, 1
+	end
+	if fallbackCount >= 2 then
+		return best
+	end
+	return nil
 end
 
 local ROOT_NAMES = { "Torso", "Root", "RootPart", "UpperTorso", "HumanoidRootPart", "Body", "Chest" }
@@ -457,8 +471,8 @@ local function step(dt)
 	stepWatermark(dt)
 
 	if enabled and targetHead then
-		AimModel(localModel(), targetHead)
-		if CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
+		local aimed = AimModel(localModel(), targetHead)
+		if aimed and CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
 			lastClick = tick()
 			local cx = camera and camera.ViewportSize.X / 2 or 0
 			local cy = camera and camera.ViewportSize.Y / 2 or 0
@@ -563,6 +577,11 @@ task.spawn(function()
 	print("[Aim][check] own model: " .. (model and model.Name or "NOT FOUND")
 		.. "  head: " .. (head and (head.Name .. " @" .. tostring(head.Position)) or "NOT FOUND"))
 	print("[Aim][check] expected avatar name: " .. CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
+	if not model then
+		local cam = Workspace.CurrentCamera
+		print("[Aim][check] no own model — camera: " .. (cam and tostring(cam.CameraType) or "nil")
+			.. " (spectating/lobby? aim waits for your body to spawn)")
+	end
 	local names = {}
 	for _, m in ipairs(Workspace:GetChildren()) do
 		if isTargetBody(m) then
