@@ -1,7 +1,9 @@
--- AimBot — face the nearest player with your head, and click to attack.
--- ponytail: this game has no Humanoids and clicking fires no remote (probed), so hits are
--- resolved by the game's own controller when it sees a real mouse click. Aiming = set your
--- head CFrame toward the target each frame; attacking = synthesize a real click.
+-- AimBot v3 — mouse-driven aim for a game with no local avatar.
+-- The game's camera is Scriptable (its CFrame is overwritten every frame) and its
+-- hits raycast from the sim's eye along the sim's yaw, which is fed by real mouse
+-- deltas. There is no local body model to rotate, so aiming = move the real mouse
+-- (mousemoverel) until the target is centered, then click. Reach/speed/anticheat
+-- patch the game's own tables, which keeps the sim consistent.
 
 --------------------------------------------------------------------
 -- CONFIG
@@ -11,26 +13,25 @@ local CONFIG = {
 	BIND = Enum.KeyCode.F, -- toggle aim+click
 	KILL_BIND = Enum.KeyCode.L, -- unload the script entirely (kill switch)
 	SPEED_BIND = Enum.KeyCode.G, -- toggle movement speed boost
-	RANGE = 60, -- studs
-	INCLUDE_BOTS = true, -- `MCBody Bot####` models are valid targets
-	LOCAL_MODEL_NAME = "MCBody", -- your own avatar model (others are `MCBody <id>`)
-	HEAD_RUN_PRIORITY = Enum.RenderPriority.Last.Value - 1, -- run after everything so the turn sticks
-	AIM_WHOLE_BODY = true, -- yaw the body too, not just the head
-	AUTO_CLICK = true, -- click at the target while aiming
-	CLICK_INTERVAL = 0.2, -- seconds between clicks
-	PATCH_REACH = true, -- raise the game's own client-side reach constants
-	REACH_COMBAT = 4.5, -- game default 3; the anti-cheat tracks reach decay, stay modest
+	RANGE = 60, -- studs (from your camera)
+	INCLUDE_BOTS = true,
+	AIM_SENS = 0.5, -- mouse-delta multiplier (raise if aim lags, lower if it wobbles)
+	AIM_MAX_DELTA = 40, -- px per frame cap
+	AUTO_CLICK = true,
+	CLICK_INTERVAL = 0.25,
+	CLICK_RANGE_PX = 45, -- click when the target is within this many px of screen center
+	PATCH_REACH = true,
+	REACH_COMBAT = 4.5, -- game default 3
 	REACH_BLOCKS = 8, -- game default 4.5
-	PATCH_ANTICHEAT = true, -- disable the client-side violation tracker (Config.AntiCheat.Enabled)
-	SPEED_WALK_MULT = 2.5, -- G boost: multiplier on the sim's own WALK_SPEED/BASE_MOVE_SPEED
-	SPEED_SPRINT_MULT = 2, -- G boost: multiplier on SPRINT_SPEED_MODIFIER
-	AIM_DEG_PER_FRAME = 10, -- max head turn per frame (~600 deg/s, under the 35 deg/tick snap limit)
-	WATERMARK = "Astolfo", -- top-of-screen scrolling text
+	PATCH_ANTICHEAT = true,
+	SPEED_WALK_MULT = 2.5,
+	SPEED_SPRINT_MULT = 2,
+	WATERMARK = "Astolfo",
 	WATERMARK_ON = true,
 	WATERMARK_SIZE = 40,
 	WATERMARK_SPEED = 140, -- pixels/second, left to right
-	WATERMARK_BRIGHT = Color3.fromRGB(40, 170, 255), -- light blue
-	WATERMARK_DARK = Color3.fromRGB(6, 30, 90), -- dark blue
+	WATERMARK_BRIGHT = Color3.fromRGB(40, 170, 255),
+	WATERMARK_DARK = Color3.fromRGB(6, 30, 90),
 	BOX_COLOR = Color3.fromRGB(255, 60, 60),
 	BOX_THICKNESS = 2,
 }
@@ -44,6 +45,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local player = Players.LocalPlayer
 if not player then
@@ -52,214 +54,13 @@ if not player then
 end
 
 --------------------------------------------------------------------
--- Finding your own model + head
+-- Mouse helpers (executor globals; mousemoverel confirmed present)
 --------------------------------------------------------------------
 
-local function findHead(model)
-	if not model then
-		return nil
-	end
-	local named = model:FindFirstChild("Head")
-	if named and named:IsA("BasePart") then
-		return named
-	end
-	for _, p in ipairs(model:GetDescendants()) do
-		if p:IsA("BasePart") and p.Name:find("Head") then
-			return p
-		end
-	end
-	local best, bestY = nil, -math.huge
-	for _, p in ipairs(model:GetDescendants()) do
-		if p:IsA("BasePart") and p.Position.Y > bestY then
-			best, bestY = p, p.Position.Y
-		end
-	end
-	return best
+local function moveMouseRel(dx, dy)
+	pcall(mousemoverel, dx, dy)
 end
 
--- Your avatar is `MCBody <yourUserId>`. A plain `MCBody` also exists but it's an
--- unpositioned template rig (every part sits at 0,0,0) — aiming that does nothing.
--- If your model hasn't spawned (lobby/spectate/respawn), fall back to an MCBody
--- hugging the camera (that's you in 1st/3rd person) — must stay within 6 studs
--- for two checks in a row so we never adopt a passing enemy.
-local fallbackModel, fallbackCount
-local function localModel()
-	local byId = Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
-	if byId and byId:IsA("Model") then
-		return byId
-	end
-	local exact = Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME)
-	if exact and exact:IsA("Model") then
-		local h = findHead(exact)
-		if h and h.Position.Magnitude > 0.01 then
-			return exact
-		end
-	end
-	local cam = Workspace.CurrentCamera
-	local camPos = cam and cam.CFrame.Position
-	if not camPos then
-		return nil
-	end
-	local best, bestDist
-	for _, m in ipairs(Workspace:GetChildren()) do
-		if m:IsA("Model")
-			and m.Name:sub(1, #CONFIG.LOCAL_MODEL_NAME) == CONFIG.LOCAL_MODEL_NAME
-			and m.Name ~= CONFIG.LOCAL_MODEL_NAME then
-			local h = findHead(m)
-			if h and h.Parent then
-				local d = (h.Position - camPos).Magnitude
-				if d < 6 and d < (bestDist or math.huge) then
-					best, bestDist = m, d
-				end
-			end
-		end
-	end
-	if not best then
-		fallbackModel, fallbackCount = nil, 0
-		return nil
-	end
-	if best == fallbackModel then
-		fallbackCount = fallbackCount + 1
-	else
-		fallbackModel, fallbackCount = best, 1
-	end
-	if fallbackCount >= 2 then
-		return best
-	end
-	return nil
-end
-
-local ROOT_NAMES = { "Torso", "Root", "RootPart", "UpperTorso", "HumanoidRootPart", "Body", "Chest" }
-
--- the part that carries the avatar's yaw (torso-ish), if any
-local function findRoot(model)
-	if not model then
-		return nil
-	end
-	local pp = model.PrimaryPart
-	if pp and pp:IsA("BasePart") then
-		return pp
-	end
-	for _, n in ipairs(ROOT_NAMES) do
-		local p = model:FindFirstChild(n)
-		if p and p:IsA("BasePart") then
-			return p
-		end
-	end
-	return nil
-end
-
---------------------------------------------------------------------
--- Target selection (other `MCBody*` models)
---------------------------------------------------------------------
-
-local function isTargetBody(inst)
-	if typeof(inst) ~= "Instance" or not inst:IsA("Model") then
-		return false
-	end
-	if inst.Name == CONFIG.LOCAL_MODEL_NAME then -- template rig
-		return false
-	end
-	if inst.Name == CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId) then -- you
-		return false
-	end
-	if inst.Name:sub(1, 6) ~= "MCBody" then
-		return false
-	end
-	if not CONFIG.INCLUDE_BOTS and inst.Name:find("Bot") then
-		return false
-	end
-	return true
-end
-
-local function findTarget()
-	local myModel = localModel()
-	local myHead = findHead(myModel)
-	local myPos = myHead and myHead.Position
-		or (Workspace.CurrentCamera and Workspace.CurrentCamera.CFrame.Position or Vector3.zero)
-	local best, bestDist, bestHead
-	for _, m in ipairs(Workspace:GetChildren()) do
-		if m ~= myModel and isTargetBody(m) then
-			local h = findHead(m)
-			if h and h.Parent then
-				local d = (h.Position - myPos).Magnitude
-				if d <= CONFIG.RANGE and d < (bestDist or math.huge) then
-					best, bestDist, bestHead = m, d, h
-				end
-			end
-		end
-	end
-	return best, bestDist, bestHead
-end
-
---------------------------------------------------------------------
--- The aim function
---------------------------------------------------------------------
-
--- Rotate `part` (your head) so its front faces `targetHead`, keeping its position.
-local function AimPart(part, targetHead)
-	if not part or not part.Parent or not targetHead or not targetHead.Parent then
-		return false
-	end
-	part.CFrame = CFrame.lookAt(part.Position, targetHead.Position)
-	return true
-end
-
-local function AimAt(target)
-	return AimPart(findHead(localModel()), findHead(target))
-end
-
--- Turn your whole avatar toward `targetHead`: head looks fully, body yaws (keeps it upright).
--- Rotation is rate-limited so it stays under the anti-cheat's aim-snap budget.
-local function turnToward(part, goalPos)
-	if not part or not part.Parent then
-		return false
-	end
-	local cur = part.CFrame
-	local goal = CFrame.lookAt(part.Position, goalPos)
-	local maxRad = math.rad(CONFIG.AIM_DEG_PER_FRAME)
-	local dot = cur.LookVector:Dot(goal.LookVector)
-	local ang = math.acos(math.clamp(dot, -1, 1))
-	if ang > maxRad then
-		local axis = cur.LookVector:Cross(goal.LookVector)
-		if axis.Magnitude < 1e-6 then
-			axis = Vector3.new(0, 1, 0)
-		end
-		goal = CFrame.new(part.Position) * CFrame.fromAxisAngle(axis.Unit, maxRad) * (cur - part.Position)
-	end
-	part.CFrame = goal
-	return true
-end
-
-local function AimModel(model, targetHead)
-	if not model or not targetHead or not targetHead.Parent then
-		return false
-	end
-	local did = false
-	local head = findHead(model)
-	if head and head.Parent then
-		did = turnToward(head, targetHead.Position) or did
-	end
-	if CONFIG.AIM_WHOLE_BODY then
-		local root = findRoot(model)
-		if root and root.Parent and root ~= head then
-			local dir = targetHead.Position - root.Position
-			local flat = Vector3.new(dir.X, 0, dir.Z)
-			if flat.Magnitude > 0.01 then
-				did = turnToward(root, root.Position + flat) or did
-			end
-		end
-	end
-	return did
-end
-
---------------------------------------------------------------------
--- Clicking (attack)
---------------------------------------------------------------------
-
-local VirtualInputManager = game:GetService("VirtualInputManager")
-
--- fire a real left click; prefers executor mouse helpers, falls back to VIM.
 local function click(x, y)
 	if type(mouse1click) == "function" then
 		pcall(mouse1click)
@@ -279,16 +80,89 @@ local function click(x, y)
 end
 
 --------------------------------------------------------------------
--- Game patches (all live: require returns the same cached table the game uses)
---   * Combat.REACH / Blocks.REACH — hit/break range
---   * Config.AntiCheat.Enabled — the client-side violation tracker (aim snap,
---     reach decay, movement). False = it stops accumulating violations locally.
---   * Constants.WALK_SPEED etc. — the sim moves the avatar from these each tick,
---     so boosting them keeps the sim and the MoveReport in agreement (no movement
---     violation) — unlike CFrame shoving, which the driver overwrites 3x per tick.
+-- Targets: avatars live in Workspace.MCPlayers (SkyWars) and/or as
+-- Workspace children (Pit). This game never spawns a local avatar model.
 --------------------------------------------------------------------
 
-local patches = {} -- originals, restored by the kill switch
+local function findHead(model)
+	if not model then
+		return nil
+	end
+	local named = model:FindFirstChild("Head")
+	if named and named:IsA("BasePart") then
+		return named
+	end
+	for _, p in ipairs(model:GetDescendants()) do
+		if p:IsA("BasePart") and p.Name:find("Head") then
+			return p
+		end
+	end
+	return nil
+end
+
+local function isTargetBody(inst)
+	if typeof(inst) ~= "Instance" or not inst:IsA("Model") then
+		return false
+	end
+	local name = inst.Name
+	if name == "MCBody" then
+		return false -- unpositioned template rig
+	end
+	if name == "MCBody " .. tostring(player.UserId) then
+		return false
+	end
+	if name:sub(1, 6) ~= "MCBody" then
+		return false
+	end
+	if not CONFIG.INCLUDE_BOTS and name:find("Bot") then
+		return false
+	end
+	return true
+end
+
+local function targetCandidates()
+	local seen, out = {}, {}
+	local function add(container)
+		if not container then
+			return
+		end
+		for _, m in ipairs(container:GetChildren()) do
+			if isTargetBody(m) and not seen[m] then
+				seen[m] = true
+				out[#out + 1] = m
+			end
+		end
+	end
+	add(Workspace:FindFirstChild("MCPlayers"))
+	add(Workspace)
+	return out
+end
+
+local function findTarget()
+	local camera = Workspace.CurrentCamera
+	local camPos = camera and camera.CFrame.Position or Vector3.zero
+	local best, bestDist, bestPos
+	for _, m in ipairs(targetCandidates()) do
+		local h = findHead(m)
+		if h and h.Parent then
+			local d = (h.Position - camPos).Magnitude
+			if d <= CONFIG.RANGE and d < (bestDist or math.huge) then
+				best, bestDist, bestPos = m, d, h.Position
+			end
+		end
+	end
+	return best, bestDist, bestPos
+end
+
+--------------------------------------------------------------------
+-- Game patches (all live: require returns the same cached table the game uses)
+--   * Combat.REACH / Blocks.REACH — hit/break range
+--   * Config.AntiCheat.Enabled — the client-side violation tracker
+--   * Constants.WALK_SPEED etc. — the sim moves the avatar from these each tick,
+--     so boosting them keeps sim and MoveReport in agreement (no movement flag)
+--------------------------------------------------------------------
+
+local patches = {}
 
 local function requireShared(name)
 	local shared = ReplicatedStorage:FindFirstChild("Shared")
@@ -379,11 +253,6 @@ local function restorePatches()
 	end
 end
 
--- exported for manual use
-if getgenv then
-	getgenv().Aim = { AimPart = AimPart, AimAt = AimAt, AimModel = AimModel, findTarget = findTarget, findHead = findHead, findRoot = findRoot, click = click }
-end
-
 --------------------------------------------------------------------
 -- Drawings (box ESP + watermark)
 --------------------------------------------------------------------
@@ -432,10 +301,9 @@ end
 --------------------------------------------------------------------
 
 local enabled = false
-local target, targetHead, targetDist
+local target, targetDist, targetPos
 local lastClick = 0
 
--- watermark: scrolls left->right forever, colour pulses between light and dark blue
 local wmClock = 0
 local function stepWatermark(dt)
 	if not wm or not wm.Visible then
@@ -460,57 +328,61 @@ wmX = -300
 
 local function step(dt)
 	local camera = Workspace.CurrentCamera
-	target, targetDist, targetHead = findTarget()
+	target, targetDist, targetPos = findTarget()
 
 	local screenPos
-	if targetHead and camera then
-		local p, onScreen = camera:WorldToViewportPoint(targetHead.Position)
+	if targetPos and camera then
+		local p, onScreen = camera:WorldToViewportPoint(targetPos)
 		screenPos = onScreen and p or nil
 	end
 
 	stepWatermark(dt)
 
-	if enabled and targetHead then
-		local aimed = AimModel(localModel(), targetHead)
-		if aimed and CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
-			lastClick = tick()
-			local cx = camera and camera.ViewportSize.X / 2 or 0
-			local cy = camera and camera.ViewportSize.Y / 2 or 0
-			if screenPos then
-				cx, cy = screenPos.X, screenPos.Y
-			end
-			click(cx, cy)
+	if box and label then
+		if screenPos then
+			local dist = targetDist or 0
+			local size = math.clamp(900 / math.max(dist, 1), 24, 260)
+			box.Size = Vector2.new(size, size * 1.35)
+			box.Position = Vector2.new(screenPos.X - size / 2, screenPos.Y - size * 0.68)
+			box.Visible = true
+			label.Position = Vector2.new(screenPos.X, screenPos.Y - size * 0.78 - 14)
+			label.Text = target.Name .. "  [" .. math.floor(dist) .. "]"
+			label.Visible = true
+		else
+			box.Visible = false
+			label.Visible = false
 		end
 	end
 
-	if not (box and label) then
+	if not (enabled and screenPos and camera) then
 		return
 	end
-	if not target or not targetHead or not screenPos then
-		box.Visible = false
-		label.Visible = false
-		return
+
+	local half = camera.ViewportSize / 2
+	local dx, dy = screenPos.X - half.X, screenPos.Y - half.Y
+	if math.abs(dx) > 2 or math.abs(dy) > 2 then
+		moveMouseRel(
+			math.clamp(dx * CONFIG.AIM_SENS, -CONFIG.AIM_MAX_DELTA, CONFIG.AIM_MAX_DELTA),
+			math.clamp(dy * CONFIG.AIM_SENS, -CONFIG.AIM_MAX_DELTA, CONFIG.AIM_MAX_DELTA))
 	end
-	local dist = targetDist or 0
-	local size = math.clamp(900 / math.max(dist, 1), 24, 260)
-	box.Size = Vector2.new(size, size * 1.35)
-	box.Position = Vector2.new(screenPos.X - size / 2, screenPos.Y - size * 0.68)
-	box.Visible = true
-	label.Position = Vector2.new(screenPos.X, screenPos.Y - size * 0.78 - 14)
-	label.Text = target.Name .. "  [" .. math.floor(dist) .. "]"
-	label.Visible = true
+	if CONFIG.AUTO_CLICK
+		and math.abs(dx) <= CONFIG.CLICK_RANGE_PX
+		and math.abs(dy) <= CONFIG.CLICK_RANGE_PX
+		and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
+		lastClick = tick()
+		click(screenPos.X, screenPos.Y)
+	end
 end
 
 local connections = {}
 if RunService.BindToRenderStep then
-	RunService:BindToRenderStep(RENDER_NAME, CONFIG.HEAD_RUN_PRIORITY, step)
+	RunService:BindToRenderStep(RENDER_NAME, Enum.RenderPriority.Last.Value - 1, step)
 else
 	connections[#connections + 1] = RunService.RenderStepped:Connect(step)
 end
 
 --------------------------------------------------------------------
--- Kill switch: fully unloads the script (unbind render step, drop
--- drawings, disconnect inputs, clear the exported table)
+-- Kill switch: fully unloads the script
 --------------------------------------------------------------------
 
 local function unload()
@@ -566,52 +438,25 @@ end)
 -- SELF CHECK
 --------------------------------------------------------------------
 
+if getgenv then
+	getgenv().Aim = { findTarget = findTarget, click = click, candidates = targetCandidates }
+end
+
 task.spawn(function()
 	task.wait(1)
 	local a, b = Vector3.new(0, 0, 0), Vector3.new(1, 0, 0)
 	local lv = CFrame.lookAt(a, b).LookVector
 	assert((lv - (b - a).Unit).Magnitude < 1e-4, "[Aim] lookAt math broken")
 
-	local model = localModel()
-	local head = findHead(model)
-	print("[Aim][check] own model: " .. (model and model.Name or "NOT FOUND")
-		.. "  head: " .. (head and (head.Name .. " @" .. tostring(head.Position)) or "NOT FOUND"))
-	print("[Aim][check] expected avatar name: " .. CONFIG.LOCAL_MODEL_NAME .. " " .. tostring(player.UserId))
-	if not model then
-		local cam = Workspace.CurrentCamera
-		print("[Aim][check] no own model — camera: " .. (cam and tostring(cam.CameraType) or "nil")
-			.. " (spectating/lobby? aim waits for your body to spawn)")
-	end
+	print("[Aim][check] mouse aim: mousemoverel=" .. tostring(type(mousemoverel) == "function"))
+	local cands = targetCandidates()
 	local names = {}
-	for _, m in ipairs(Workspace:GetChildren()) do
-		if isTargetBody(m) then
-			names[#names + 1] = m.Name
-		end
+	for _, m in ipairs(cands) do
+		names[#names + 1] = m.Name
 	end
 	print("[Aim][check] targets: " .. #names .. " (" .. table.concat(names, ", ") .. ")")
-	-- model anatomy, so we can see the real part names/positions
-	local parts, shown = {}, 0
-	for _, p in ipairs(model and model:GetDescendants() or {}) do
-		if p:IsA("BasePart") and shown < 12 then
-			shown = shown + 1
-			parts[#parts + 1] = p.Name .. "@" .. tostring(p.Position)
-		end
-	end
-	print("[Aim][check] parts: " .. (shown > 0 and table.concat(parts, " ") or "NONE"))
-	print("[Aim][check] root: " .. (findRoot(model) and findRoot(model).Name or "NOT FOUND")
-		.. "  primary: " .. (model and model.PrimaryPart and model.PrimaryPart.Name or "nil"))
-	print("[Aim][check] humanoid: " .. tostring(model and model:FindFirstChildWhichIsA("Humanoid") ~= nil)
-		.. "  parts: " .. tostring(model and #model:GetChildren() or 0))
-	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
-		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
+	print("[Aim][check] note: no local avatar model exists in this game — aiming is mouse-driven.")
 	print("[Aim][check] patches: " .. tostring(patchResult))
-	for i = 1, 4 do
-		task.wait(2)
-		local m2 = localModel()
-		local h2 = findHead(m2)
-		print("[Aim][check] own model (retry " .. i .. "): "
-			.. (m2 and (m2.Name .. "  head:" .. tostring(h2 ~= nil)) or "NOT FOUND"))
-	end
 	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.SPEED_BIND.Name
 		.. " speed boost | " .. CONFIG.KILL_BIND.Name .. " kill script")
 end)
