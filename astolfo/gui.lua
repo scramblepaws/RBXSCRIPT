@@ -46,10 +46,10 @@ local function printOn(name, v)
 	print("[Astolfo] " .. name .. " " .. (v and "ON" or "OFF"))
 end
 
-local combat = Window:CreateTab({ Name = "Combat", Icon = "crosshair", ImageSource = "Lucide", ShowTitle = false })
-local movement = Window:CreateTab({ Name = "Movement", Icon = "footprints", ImageSource = "Lucide", ShowTitle = false })
-local render = Window:CreateTab({ Name = "Render", Icon = "eye", ImageSource = "Lucide", ShowTitle = false })
-local client = Window:CreateTab({ Name = "Client", Icon = "settings", ImageSource = "Lucide", ShowTitle = false })
+local combat = Window:CreateTab({ Name = "Combat", Icon = "shield", ImageSource = "Material", ShowTitle = false })
+local movement = Window:CreateTab({ Name = "Movement", Icon = "directions_run", ImageSource = "Material", ShowTitle = false })
+local render = Window:CreateTab({ Name = "Render", Icon = "visibility", ImageSource = "Material", ShowTitle = false })
+local client = Window:CreateTab({ Name = "Client", Icon = "settings", ImageSource = "Material", ShowTitle = false })
 
 -- Combat -----------------------------------------------------------------
 safe("section combat killaura", function() combat:CreateSection("KillAura") end)
