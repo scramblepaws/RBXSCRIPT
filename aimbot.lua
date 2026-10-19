@@ -1,7 +1,7 @@
 -- Astolfo — entry point. Fetches the astolfo/ modules in order and starts.
 -- Update REV whenever the modules change (pin to the commit sha).
 
-local REV = "6cbb7b2"
+local REV = "ecb05cf"
 local BASE = "https://raw.githubusercontent.com/scramblepaws/RBXSCRIPT/" .. REV .. "/astolfo/"
 
 local S = getgenv and getgenv().Astolfo or nil
