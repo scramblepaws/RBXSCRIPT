@@ -173,16 +173,24 @@ local function findTarget()
 	return best, bestDist, bestPos
 end
 
-local function targetHealth(m)
+local function targetAttr(m, name)
 	local id = m.Name:match("MCBody%s+(%S+)$")
 	local mcPlayers = Workspace:FindFirstChild("MCPlayers")
 	local pinst = id and mcPlayers and mcPlayers:FindFirstChild(id)
-	local h = pinst and pinst:GetAttribute("Health")
-	if h == nil and m:FindFirstChild("Info") then
-		h = m.Info:GetAttribute("Health")
+	local v = pinst and pinst:GetAttribute(name)
+	if v == nil and m:FindFirstChild("Info") then
+		v = m.Info:GetAttribute(name)
 	end
-	return h
+	return v
 end
+
+local function targetHealth(m)
+	return targetAttr(m, "Health")
+end
+
+-- the aim point in studs: the game's own lag-compensated box center (the server
+-- raycasts these rewind boxes, not the rendered model), fallback nil
+local aimPoint = nil
 
 --------------------------------------------------------------------
 -- Modules + originals (everything restored by unload)
@@ -207,6 +215,7 @@ local physics = requireShared("MCPhysics")
 local aimAssist = requireShared("AimAssist")
 local inputs = requireShared("Net/Inputs")
 local kbDelay = requireShared("KbDelay")
+local simulation = requireShared("Net/Simulation")
 
 SPB = (physics and physics.Constants and physics.Constants.STUDS_PER_BLOCK) or 3.5714
 do
@@ -290,14 +299,19 @@ local AIM_MAX_DEG_PER_FRAME = 11 -- ~700 deg/s at 60fps: just under the 35 deg/t
 if inputs and type(inputs.fireLook) == "function" and aimAssist then
 	orig.fireLook = inputs.fireLook
 	inputs.fireLook = function(handles, yaw, pitch)
-		if not killed and FEATURES.aura and targetPos then
+		if not killed and FEATURES.aura and (aimPoint or targetPos) then
 			local ex = player:GetAttribute("X")
 			local ey = player:GetAttribute("Y")
 			local ez = player:GetAttribute("Z")
 			if ex then
+				local tp, ty
+				if aimPoint then
+					tp, ty = aimPoint, aimPoint.Y
+				else
+					tp, ty = targetPos, targetPos.Y - 0.75 * SPB
+				end
 				local exs = Vector3.new(ex, ey + 1.62, ez) * SPB + mapOrigin
-				local cy = targetPos.Y - 0.75 * SPB -- head -> box center
-				local dyaw, dpitch = aimAssist.anglesTo(exs.X, exs.Y, exs.Z, targetPos.X, cy, targetPos.Z)
+				local dyaw, dpitch = aimAssist.anglesTo(exs.X, exs.Y, exs.Z, tp.X, ty, tp.Z)
 				if VALUES.aimMode == "Smooth" then
 					local dY = ((dyaw - yaw + 180) % 360) - 180
 					local dP = math.clamp(dpitch - pitch, -AIM_MAX_DEG_PER_FRAME, AIM_MAX_DEG_PER_FRAME)
@@ -317,12 +331,15 @@ end
 if physics and physics.Combat and type(physics.Combat.rayHit) == "function" and aimAssist then
 	orig.rayHit = physics.Combat.rayHit
 	physics.Combat.rayHit = function(x, y, z, yaw, pitch, box, reach)
-		-- x/y/z and box are in BLOCK units; convert the target position to blocks
-		if not killed and FEATURES.aura and targetPos and box then
+		-- x/y/z and box are in BLOCK units; convert the target point to blocks
+		if not killed and FEATURES.aura and (aimPoint or targetPos) and box then
 			local cx = (box.minX + box.maxX) / 2
 			local cy = (box.minY + box.maxY) / 2
 			local cz = (box.minZ + box.maxZ) / 2
-			local tb = (targetPos - mapOrigin) / SPB
+			local tb = ((aimPoint or targetPos) - mapOrigin) / SPB
+			if not aimPoint then
+				tb = tb - Vector3.new(0, 0.75, 0)
+			end
 			local off = Vector3.new(cx - tb.X, cy - tb.Y, cz - tb.Z).Magnitude
 			if off < 1.2 then
 				yaw, pitch = aimAssist.anglesTo(x, y, z, cx, cy, cz)
@@ -534,6 +551,30 @@ local function step(dt)
 	local camera = Workspace.CurrentCamera
 	target, targetDist, targetPos = findTarget()
 
+	-- aim at the game's own lag-compensated box nearest the target (the server
+	-- raycasts these rewind boxes, not the rendered model)
+	aimPoint = nil
+	if FEATURES.aura and targetPos and simulation then
+		local ok, list = pcall(function()
+			return simulation.targets(2)
+		end)
+		if ok and typeof(list) == "table" then
+			local best, bestD
+			for _, e in ipairs(list) do
+				local b = e.box
+				if b then
+					local c = Vector3.new((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2)
+						* SPB + mapOrigin
+					local d = (c - targetPos).Magnitude
+					if d < (bestD or 8) then
+						best, bestD = c, d
+					end
+				end
+			end
+			aimPoint = best
+		end
+	end
+
 	stepWatermark(dt)
 	stepGlow()
 
@@ -613,8 +654,11 @@ local function step(dt)
 		end
 	end
 
+	-- swing only when the victim can actually take damage (HurtRes window = 1s)
+	local hurtRes = target and targetAttr(target, "HurtRes") or nil
 	if FEATURES.aura and targetPos and camera
 		and (targetDist or math.huge) <= VALUES.attackDist * SPB
+		and (hurtRes == nil or hurtRes <= 0)
 		and tick() - lastClick >= 1 / VALUES.cps then
 		lastClick = tick()
 		click(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
@@ -632,168 +676,375 @@ end
 -- GUI
 --------------------------------------------------------------------
 
-local guiRoot, guiFrame
+local ACCENT = Color3.fromRGB(94, 160, 255)
+local PANEL = Color3.fromRGB(18, 18, 26)
+local PANEL2 = Color3.fromRGB(27, 27, 38)
+local TEXT = Color3.fromRGB(225, 225, 230)
+local DIM = Color3.fromRGB(140, 140, 150)
+local guiRoot, guiSidebar, guiPane
 local capturingBind = nil
+local guiSelected = { cat = "Combat", name = "KillAura" }
 
-local function guiButton(text, color)
-	local b = Instance.new("TextButton")
-	b.Text = text
-	b.BackgroundColor3 = color or Color3.fromRGB(45, 45, 55)
-	b.TextColor3 = Color3.fromRGB(255, 255, 255)
-	b.BorderSizePixel = 0
-	b.AutoButtonColor = true
-	b.TextSize = 14
-	return b
-end
-
-local function addRow(name, control)
-	local r = Instance.new("Frame")
-	r.Size = UDim2.new(1, 0, 0, 26)
-	r.BackgroundTransparency = 1
-	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(0.45, 0, 1, 0)
-	lbl.Position = UDim2.new(0, 6, 0, 0)
-	lbl.Text = name
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
-	lbl.BackgroundTransparency = 1
-	lbl.TextSize = 14
-	lbl.Parent = r
-	control.Size = UDim2.new(0.55, -6, 1, -4)
-	control.Position = UDim2.new(0.45, 0, 0, 2)
-	control.Parent = r
-	r.Parent = guiFrame
-	return control
-end
-
-local function addToggleRow(name, get, set)
-	local b = guiButton("")
-	local function refresh()
-		local on = get()
-		b.Text = on and "ON" or "OFF"
-		b.BackgroundColor3 = on and Color3.fromRGB(40, 140, 60) or Color3.fromRGB(120, 40, 40)
-	end
-	refresh()
-	b.MouseButton1Click:Connect(function()
-		set(not get())
-		refresh()
-	end)
-	addRow(name, b)
-end
-
-local function addSliderRow(name, get, set, min, max, step)
-	local b = guiButton(tostring(get()))
-	local function refresh()
-		b.Text = tostring(get())
-	end
-	b.MouseButton1Click:Connect(function()
-		set(math.min(max, get() + step))
-		refresh()
-	end)
-	b.MouseButton2Click:Connect(function()
-		set(math.max(min, get() - step))
-		refresh()
-	end)
-	addRow(name, b)
-end
-
-local function addCycleRow(name, get, set, options)
-	local b = guiButton(get())
-	local i = 1
-	for idx, o in ipairs(options) do
-		if o == get() then
-			i = idx
-		end
-	end
-	b.MouseButton1Click:Connect(function()
-		i = i % #options + 1
-		set(options[i])
-		b.Text = options[i]
-	end)
-	addRow(name, b)
-end
-
-local function addBindRow(name, getKey, setKey)
-	local b = guiButton(getKey().Name)
-	b.MouseButton1Click:Connect(function()
-		capturingBind = { button = b, set = setKey }
-		b.Text = "..."
-	end)
-	addRow(name, b)
-end
-
-local function buildGui()
-	guiRoot = Instance.new("ScreenGui")
-	guiRoot.Name = "AstolfoGUI"
-	guiRoot.ResetOnSpawn = false
-	guiRoot.Parent = player:FindFirstChild("PlayerGui")
-
-	guiFrame = Instance.new("Frame")
-	guiFrame.Size = UDim2.new(0, 300, 0, 0)
-	guiFrame.AutomaticSize = Enum.AutomaticSize.Y
-	guiFrame.Position = UDim2.new(0, 10, 0, 80)
-	guiFrame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
-	guiFrame.BorderSizePixel = 0
-	guiFrame.Parent = guiRoot
-
-	local title = Instance.new("TextLabel")
-	title.Size = UDim2.new(1, 0, 0, 24)
-	title.Text = "Astolfo"
-	title.TextColor3 = Color3.fromRGB(90, 180, 255)
-	title.TextSize = 18
-	title.Font = Enum.Font.GothamBold
-	title.BackgroundTransparency = 1
-	title.Parent = guiFrame
-
-	local list = Instance.new("UIListLayout")
-	list.Parent = guiFrame
-
-	addToggleRow("KillAura", function() return FEATURES.aura end, function(v)
+local MODULES = {
+	{ cat = "Combat", name = "KillAura", get = function() return FEATURES.aura end, set = function(v)
 		FEATURES.aura = v
 		print("[Astolfo] KillAura " .. (v and "ON" or "OFF"))
-	end)
-	addSliderRow("CPS", function() return VALUES.cps end, function(v) VALUES.cps = v end, 1, 20, 1)
-	addSliderRow("Range", function() return VALUES.range end, function(v) VALUES.range = v end, 10, 60, 5)
-	addSliderRow("Reach", function() return VALUES.reach end, function(v)
-		VALUES.reach = v
-		applyReach(v)
-	end, 2.5, 4, 0.1)
-	addSliderRow("AttackDist blk", function() return VALUES.attackDist end, function(v) VALUES.attackDist = v end, 2.5, 4.5, 0.1)
-	addCycleRow("Targets", function() return VALUES.targets end, function(v) VALUES.targets = v end, { "All", "Players", "Bots" })
-	addCycleRow("Aim", function() return VALUES.aimMode end, function(v) VALUES.aimMode = v end, { "Instant", "Smooth" })
-	addToggleRow("Glow target", function() return FEATURES.glow end, function(v) FEATURES.glow = v end)
-	addToggleRow("TargetStrafe", function() return FEATURES.strafe end, function(v)
-		FEATURES.strafe = v
-		print("[Astolfo] TargetStrafe " .. (v and "ON" or "OFF"))
-	end)
-	addToggleRow("Speed", function() return FEATURES.speed end, function(v)
-		FEATURES.speed = v
-		print("[Astolfo] Speed " .. (v and ("ON x" .. VALUES.speed) or "OFF"))
-	end)
-	addSliderRow("Speed x", function() return VALUES.speed end, function(v) VALUES.speed = v end, 1, 5, 0.5)
-	addToggleRow("Velocity", function() return FEATURES.velocity end, function(v)
+	end, bind = function() return BINDS.aura end, rows = {
+		{ type = "slider", label = "CPS", get = function() return VALUES.cps end, set = function(v) VALUES.cps = v end, min = 1, max = 20, step = 1 },
+		{ type = "slider", label = "Range", get = function() return VALUES.range end, set = function(v) VALUES.range = v end, min = 10, max = 60, step = 5 },
+		{ type = "slider", label = "Reach", get = function() return VALUES.reach end, set = function(v)
+			VALUES.reach = v
+			applyReach(v)
+		end, min = 2.5, max = 4, step = 0.1 },
+		{ type = "slider", label = "AttackDist", get = function() return VALUES.attackDist end, set = function(v) VALUES.attackDist = v end, min = 2.5, max = 4.5, step = 0.1 },
+		{ type = "cycle", label = "Targets", get = function() return VALUES.targets end, set = function(v) VALUES.targets = v end, options = { "All", "Players", "Bots" } },
+		{ type = "cycle", label = "Aim", get = function() return VALUES.aimMode end, set = function(v) VALUES.aimMode = v end, options = { "Instant", "Smooth" } },
+		{ type = "toggle", label = "Glow target", get = function() return FEATURES.glow end, set = function(v) FEATURES.glow = v end },
+		{ type = "toggle", label = "TargetStrafe", get = function() return FEATURES.strafe end, set = function(v)
+			FEATURES.strafe = v
+			print("[Astolfo] TargetStrafe " .. (v and "ON" or "OFF"))
+		end },
+	} },
+	{ cat = "Combat", name = "Velocity", get = function() return FEATURES.velocity end, set = function(v)
 		FEATURES.velocity = v
 		print("[Astolfo] Velocity " .. (v and "ON" or "OFF"))
-	end)
-	addSliderRow("KB keep %", function() return VALUES.kbKeep end, function(v) VALUES.kbKeep = v end, 0, 100, 10)
-	addToggleRow("NoSlow", function() return FEATURES.noslow end, function(v) FEATURES.noslow = v end)
-	addToggleRow("Bhop", function() return FEATURES.bhop end, function(v) FEATURES.bhop = v end)
-	addToggleRow("ESP", function() return FEATURES.esp end, function(v) FEATURES.esp = v end)
-	addToggleRow("Watermark", function() return FEATURES.watermark end, function(v)
+	end, rows = {
+		{ type = "slider", label = "KB keep %", get = function() return VALUES.kbKeep end, set = function(v) VALUES.kbKeep = v end, min = 0, max = 100, step = 10 },
+	} },
+	{ cat = "Movement", name = "Speed", get = function() return FEATURES.speed end, set = function(v)
+		FEATURES.speed = v
+		print("[Astolfo] Speed " .. (v and ("ON x" .. VALUES.speed) or "OFF"))
+	end, bind = function() return BINDS.speed end, rows = {
+		{ type = "slider", label = "Multiplier", get = function() return VALUES.speed end, set = function(v) VALUES.speed = v end, min = 1, max = 5, step = 0.5 },
+	} },
+	{ cat = "Movement", name = "Bhop", get = function() return FEATURES.bhop end, set = function(v) FEATURES.bhop = v end },
+	{ cat = "Movement", name = "NoSlow", get = function() return FEATURES.noslow end, set = function(v) FEATURES.noslow = v end },
+	{ cat = "Render", name = "ESP", get = function() return FEATURES.esp end, set = function(v) FEATURES.esp = v end },
+	{ cat = "Render", name = "Watermark", get = function() return FEATURES.watermark end, set = function(v)
 		FEATURES.watermark = v
 		if wm then
 			wm.Visible = v
 		end
-	end)
-	addBindRow("Aura bind", function() return BINDS.aura end, function(k) BINDS.aura = k end)
-	addBindRow("Speed bind", function() return BINDS.speed end, function(k) BINDS.speed = k end)
-	addBindRow("Kill bind", function() return BINDS.kill end, function(k) BINDS.kill = k end)
-	addBindRow("GUI bind", function() return BINDS.gui end, function(k) BINDS.gui = k end)
+	end },
+	{ cat = "Client", name = "Keybinds", rows = {
+		{ type = "bind", label = "Aura", get = function() return BINDS.aura end, set = function(k) BINDS.aura = k end },
+		{ type = "bind", label = "Speed", get = function() return BINDS.speed end, set = function(k) BINDS.speed = k end },
+		{ type = "bind", label = "Kill", get = function() return BINDS.kill end, set = function(k) BINDS.kill = k end },
+		{ type = "bind", label = "GUI", get = function() return BINDS.gui end, set = function(k) BINDS.gui = k end },
+		{ type = "unload" },
+	} },
+}
 
-	local unloadBtn = guiButton("Unload (restore everything)")
-	unloadBtn.BackgroundColor3 = Color3.fromRGB(120, 30, 30)
-	unloadBtn.MouseButton1Click:Connect(unload)
-	addRow("", unloadBtn)
+local function selectedModule()
+	for _, m in ipairs(MODULES) do
+		if m.cat == guiSelected.cat and m.name == guiSelected.name then
+			return m
+		end
+	end
+	return MODULES[1]
+end
+
+local function clearChildren(c)
+	for _, ch in ipairs(c:GetChildren()) do
+		ch:Destroy()
+	end
+end
+
+local function renderSidebar()
+	clearChildren(guiSidebar)
+	for _, cat in ipairs({ "Combat", "Movement", "Render", "Client" }) do
+		local catBtn = Instance.new("TextButton")
+		catBtn.Size = UDim2.new(1, -12, 0, 20)
+		catBtn.BackgroundColor3 = cat == guiSelected.cat and PANEL2 or PANEL
+		catBtn.TextColor3 = cat == guiSelected.cat and ACCENT or DIM
+		catBtn.Text = cat
+		catBtn.TextXAlignment = Enum.TextXAlignment.Left
+		catBtn.TextSize = 12
+		catBtn.Font = Enum.Font.GothamBold
+		catBtn.BorderSizePixel = 0
+		catBtn.AutoButtonColor = false
+		catBtn.MouseButton1Click:Connect(function()
+			guiSelected.cat = cat
+			local first
+			for _, m in ipairs(MODULES) do
+				if m.cat == cat then
+					first = first or m.name
+				end
+			end
+			guiSelected.name = first or ""
+			renderSidebar()
+			renderPane()
+		end)
+		catBtn.Parent = guiSidebar
+
+		for _, m in ipairs(MODULES) do
+			if m.cat == cat then
+				local sel = guiSelected.name == m.name and guiSelected.cat == cat
+				local row = Instance.new("TextButton")
+				row.Size = UDim2.new(1, -12, 0, 24)
+				row.BackgroundColor3 = sel and PANEL2 or PANEL
+				row.TextColor3 = (sel and ACCENT) or (m.get() and Color3.fromRGB(150, 200, 255) or TEXT)
+				row.Text = m.name
+				row.TextXAlignment = Enum.TextXAlignment.Left
+				row.TextSize = 13
+				row.BorderSizePixel = 0
+				row.AutoButtonColor = false
+				row.MouseButton1Click:Connect(function()
+					guiSelected = { cat = cat, name = m.name }
+					if m.set then
+						m.set(not m.get())
+					end
+					renderSidebar()
+					renderPane()
+				end)
+				row.Parent = guiSidebar
+				if m.bind then
+					local badge = Instance.new("TextLabel")
+					badge.Size = UDim2.new(0, 34, 1, 0)
+					badge.Position = UDim2.new(1, -34, 0, 0)
+					badge.BackgroundTransparency = 1
+					badge.TextColor3 = DIM
+					badge.Text = "[" .. m.bind().Name .. "]"
+					badge.TextXAlignment = Enum.TextXAlignment.Right
+					badge.TextSize = 11
+					badge.Parent = row
+				end
+			end
+		end
+	end
+end
+
+local function renderRow(spec)
+	if spec.type == "toggle" then
+		local b = Instance.new("TextButton")
+		local function refresh()
+			local on = spec.get()
+			b.Text = on and "ON" or "OFF"
+			b.BackgroundColor3 = on and ACCENT or PANEL2
+			b.TextColor3 = on and Color3.fromRGB(10, 10, 14) or TEXT
+		end
+		refresh()
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.TextSize = 13
+		b.MouseButton1Click:Connect(function()
+			spec.set(not spec.get())
+			refresh()
+		end)
+		return b
+	elseif spec.type == "slider" then
+		local frame = Instance.new("Frame")
+		frame.BackgroundTransparency = 1
+		local minus = Instance.new("TextButton")
+		minus.Size = UDim2.new(0, 26, 1, 0)
+		minus.Position = UDim2.new(0, 0, 0, 0)
+		minus.Text = "-"
+		minus.BackgroundColor3 = PANEL2
+		minus.TextColor3 = TEXT
+		minus.BorderSizePixel = 0
+		minus.TextSize = 13
+		minus.Parent = frame
+		local value = Instance.new("TextButton")
+		value.Size = UDim2.new(1, -56, 1, 0)
+		value.Position = UDim2.new(0, 28, 0, 0)
+		value.Text = tostring(spec.get())
+		value.BackgroundColor3 = PANEL
+		value.TextColor3 = ACCENT
+		value.BorderSizePixel = 0
+		value.AutoButtonColor = false
+		value.TextSize = 13
+		value.Parent = frame
+		local plus = Instance.new("TextButton")
+		plus.Size = UDim2.new(0, 26, 1, 0)
+		plus.Position = UDim2.new(1, -26, 0, 0)
+		plus.Text = "+"
+		plus.BackgroundColor3 = PANEL2
+		plus.TextColor3 = TEXT
+		plus.BorderSizePixel = 0
+		plus.TextSize = 13
+		plus.Parent = frame
+		local function refresh()
+			value.Text = tostring(spec.get())
+		end
+		minus.MouseButton1Click:Connect(function()
+			spec.set(math.max(spec.min, spec.get() - spec.step))
+			refresh()
+		end)
+		plus.MouseButton1Click:Connect(function()
+			spec.set(math.min(spec.max, spec.get() + spec.step))
+			refresh()
+		end)
+		return frame
+	elseif spec.type == "cycle" then
+		local b = Instance.new("TextButton")
+		b.Text = spec.get()
+		b.BackgroundColor3 = PANEL2
+		b.TextColor3 = ACCENT
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.TextSize = 13
+		b.MouseButton1Click:Connect(function()
+			local i = 1
+			for idx, o in ipairs(spec.options) do
+				if o == spec.get() then
+					i = idx
+				end
+			end
+			i = i % #spec.options + 1
+			spec.set(spec.options[i])
+			b.Text = spec.options[i]
+		end)
+		return b
+	elseif spec.type == "bind" then
+		local b = Instance.new("TextButton")
+		b.Text = spec.get().Name
+		b.BackgroundColor3 = PANEL2
+		b.TextColor3 = TEXT
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.TextSize = 13
+		b.MouseButton1Click:Connect(function()
+			capturingBind = { button = b, set = spec.set }
+			b.Text = "..."
+		end)
+		return b
+	elseif spec.type == "unload" then
+		local b = Instance.new("TextButton")
+		b.Text = "Unload"
+		b.BackgroundColor3 = Color3.fromRGB(120, 30, 30)
+		b.TextColor3 = TEXT
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = false
+		b.TextSize = 13
+		b.MouseButton1Click:Connect(unload)
+		return b
+	end
+	return nil
+end
+
+local function renderPane()
+	clearChildren(guiPane)
+	local mod = selectedModule()
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, -16, 0, 24)
+	title.Text = mod.name
+	title.TextColor3 = ACCENT
+	title.TextSize = 16
+	title.Font = Enum.Font.GothamBold
+	title.BackgroundTransparency = 1
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = guiPane
+
+	if mod.rows then
+		for _, spec in ipairs(mod.rows) do
+			local r = Instance.new("Frame")
+			r.Size = UDim2.new(1, 0, 0, 28)
+			r.BackgroundTransparency = 1
+			local lbl = Instance.new("TextLabel")
+			lbl.Size = UDim2.new(0.45, 0, 1, 0)
+			lbl.Position = UDim2.new(0, 2, 0, 0)
+			lbl.Text = spec.label or ""
+			lbl.TextXAlignment = Enum.TextXAlignment.Left
+			lbl.TextColor3 = TEXT
+			lbl.BackgroundTransparency = 1
+			lbl.TextSize = 13
+			lbl.Parent = r
+			local control = renderRow(spec)
+			if control then
+				control.Size = UDim2.new(0.55, -10, 1, -6)
+				control.Position = UDim2.new(0.45, 0, 0, 3)
+				control.Parent = r
+			end
+			r.Parent = guiPane
+		end
+	end
+end
+
+local function buildGui()
+	guiRoot = Instance.new("ScreenGui")
+	guiRoot.Name = "Astolfo"
+	guiRoot.ResetOnSpawn = false
+	guiRoot.Parent = player:FindFirstChild("PlayerGui")
+
+	local win = Instance.new("Frame")
+	win.Size = UDim2.new(0, 560, 0, 400)
+	win.Position = UDim2.new(0, 10, 0, 70)
+	win.BackgroundColor3 = PANEL
+	win.BorderSizePixel = 0
+	win.Parent = guiRoot
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 6)
+	corner.Parent = win
+
+	local titleBar = Instance.new("Frame")
+	titleBar.Size = UDim2.new(1, 0, 0, 30)
+	titleBar.BackgroundColor3 = PANEL2
+	titleBar.BorderSizePixel = 0
+	titleBar.Parent = win
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(0, 160, 1, 0)
+	title.Position = UDim2.new(0, 10, 0, 0)
+	title.Text = "ASTOLFO"
+	title.TextColor3 = ACCENT
+	title.TextSize = 15
+	title.Font = Enum.Font.GothamBold
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.BackgroundTransparency = 1
+	title.Parent = titleBar
+
+	local version = Instance.new("TextLabel")
+	version.Size = UDim2.new(0, 60, 1, 0)
+	version.Position = UDim2.new(0, 90, 0, 0)
+	version.Text = "v5"
+	version.TextColor3 = DIM
+	version.TextSize = 11
+	version.BackgroundTransparency = 1
+	version.TextXAlignment = Enum.TextXAlignment.Left
+	version.Parent = titleBar
+
+	local close = Instance.new("TextButton")
+	close.Size = UDim2.new(0, 30, 1, 0)
+	close.Position = UDim2.new(1, -30, 0, 0)
+	close.Text = "x"
+	close.TextColor3 = TEXT
+	close.BackgroundColor3 = PANEL2
+	close.BorderSizePixel = 0
+	close.AutoButtonColor = false
+	close.MouseButton1Click:Connect(toggleGui)
+	close.Parent = titleBar
+
+	guiSidebar = Instance.new("Frame")
+	guiSidebar.Size = UDim2.new(0, 160, 1, -30)
+	guiSidebar.Position = UDim2.new(0, 0, 0, 30)
+	guiSidebar.BackgroundColor3 = PANEL
+	guiSidebar.BorderSizePixel = 0
+	guiSidebar.Parent = win
+	local sbList = Instance.new("UIListLayout")
+	sbList.Padding = UDim.new(0, 2)
+	sbList.Parent = guiSidebar
+	local sbPad = Instance.new("UIPadding")
+	sbPad.PaddingTop = 6
+	sbPad.PaddingLeft = 6
+	sbPad.Parent = guiSidebar
+
+	guiPane = Instance.new("Frame")
+	guiPane.Size = UDim2.new(1, -160, 1, -30)
+	guiPane.Position = UDim2.new(0, 160, 0, 30)
+	guiPane.BackgroundColor3 = PANEL
+	guiPane.BorderSizePixel = 0
+	guiPane.Parent = win
+	local paneList = Instance.new("UIListLayout")
+	paneList.Padding = UDim.new(0, 4)
+	paneList.Parent = guiPane
+	local panePad = Instance.new("UIPadding")
+	panePad.PaddingTop = 8
+	panePad.PaddingLeft = 8
+	panePad.PaddingRight = 8
+	panePad.Parent = guiPane
+
+	renderSidebar()
+	renderPane()
 
 	guiRoot.Enabled = false
 end
