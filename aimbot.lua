@@ -9,7 +9,7 @@
 
 local CONFIG = {
 	BIND = Enum.KeyCode.F, -- toggle aim+click
-	KILL_BIND = Enum.KeyCode.L, -- insta-kill the current target (burst click)
+	KILL_BIND = Enum.KeyCode.L, -- unload the script entirely (kill switch)
 	SPEED_BIND = Enum.KeyCode.G, -- toggle movement speed boost
 	RANGE = 60, -- studs
 	INCLUDE_BOTS = true, -- `MCBody Bot####` models are valid targets
@@ -18,8 +18,13 @@ local CONFIG = {
 	AIM_WHOLE_BODY = true, -- yaw the body too, not just the head
 	AUTO_CLICK = true, -- click at the target while aiming
 	CLICK_INTERVAL = 0.2, -- seconds between clicks
-	KILL_BURST = 1.5, -- seconds of max-rate clicking when L is pressed
 	SPEED_BONUS = 30, -- extra studs/second while moving (boost toggled with G)
+	WATERMARK = "Astolfo", -- top-of-screen scrolling text
+	WATERMARK_ON = true,
+	WATERMARK_SIZE = 40,
+	WATERMARK_SPEED = 140, -- pixels/second, left to right
+	WATERMARK_BRIGHT = Color3.fromRGB(40, 170, 255), -- light blue
+	WATERMARK_DARK = Color3.fromRGB(6, 30, 90), -- dark blue
 	BOX_COLOR = Color3.fromRGB(255, 60, 60),
 	BOX_THICKNESS = 2,
 }
@@ -200,11 +205,14 @@ if getgenv then
 end
 
 --------------------------------------------------------------------
--- Box ESP
+-- Drawings (box ESP + watermark)
 --------------------------------------------------------------------
 
 local RENDER_NAME = "UntitledAim"
-local box, label
+local drawings = {}
+local box, label, wm
+local wmX = 0
+
 do
 	local ok = pcall(function()
 		if not Drawing then
@@ -215,15 +223,27 @@ do
 		box.Filled = false
 		box.Color = CONFIG.BOX_COLOR
 		box.Visible = false
+		drawings[#drawings + 1] = box
+
 		label = Drawing.new("Text")
 		label.Size = 16
 		label.Center = true
 		label.Outline = true
 		label.Color = CONFIG.BOX_COLOR
 		label.Visible = false
+		drawings[#drawings + 1] = label
+
+		wm = Drawing.new("Text")
+		wm.Text = CONFIG.WATERMARK
+		wm.Size = CONFIG.WATERMARK_SIZE
+		wm.Center = false
+		wm.Outline = true
+		wm.Color = CONFIG.WATERMARK_BRIGHT
+		wm.Visible = CONFIG.WATERMARK_ON
+		drawings[#drawings + 1] = wm
 	end)
 	if not ok then
-		warn("[Aim] Drawing API unavailable — aiming still works, no box.")
+		warn("[Aim] Drawing API unavailable — aiming still works, no box/watermark.")
 	end
 end
 
@@ -235,8 +255,6 @@ local enabled = false
 local speedOn = false
 local target, targetHead, targetDist
 local lastClick = 0
-local clickCount = 0
-local burstUntil = 0
 
 -- shove the avatar forward with WASD, camera-relative. No Humanoid, so we move the root.
 local function applySpeed(dt, model, camera)
@@ -267,6 +285,29 @@ local function applySpeed(dt, model, camera)
 	root.CFrame = root.CFrame + dir.Unit * (CONFIG.SPEED_BONUS * dt)
 end
 
+-- watermark: scrolls left->right forever, colour pulses between light and dark blue
+local wmClock = 0
+local function stepWatermark(dt)
+	if not wm or not wm.Visible then
+		return
+	end
+	dt = dt or 0
+	wmClock = wmClock + dt
+	local screenW = (Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize.X) or 1920
+	local width = math.max(#wm.Text * CONFIG.WATERMARK_SIZE * 0.6, 120)
+	wmX = wmX + CONFIG.WATERMARK_SPEED * dt
+	if wmX > screenW then
+		wmX = -width
+	end
+	local t = (math.sin(wmClock * 2) + 1) / 2 -- 0..1
+	wm.Position = Vector2.new(wmX, 10)
+	wm.Size = CONFIG.WATERMARK_SIZE + t * 4 -- slight pulse
+	wm.Color = CONFIG.WATERMARK_BRIGHT:Lerp(CONFIG.WATERMARK_DARK, t)
+end
+
+-- start off the left edge so it visually enters from the left
+wmX = -300
+
 local function step(dt)
 	local camera = Workspace.CurrentCamera
 	target, targetDist, targetHead = findTarget()
@@ -277,6 +318,8 @@ local function step(dt)
 		screenPos = onScreen and p or nil
 	end
 
+	stepWatermark(dt)
+
 	local model = localModel()
 	if dt then
 		applySpeed(dt, model, camera)
@@ -284,8 +327,7 @@ local function step(dt)
 
 	if enabled and targetHead then
 		AimModel(model, targetHead)
-		local bursting = tick() < burstUntil
-		if bursting or (CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL) then
+		if CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
 			lastClick = tick()
 			local cx = camera and camera.ViewportSize.X / 2 or 0
 			local cy = camera and camera.ViewportSize.Y / 2 or 0
@@ -293,7 +335,6 @@ local function step(dt)
 				cx, cy = screenPos.X, screenPos.Y
 			end
 			click(cx, cy)
-			clickCount = clickCount + 1
 		end
 	end
 
@@ -315,17 +356,49 @@ local function step(dt)
 	label.Visible = true
 end
 
+local connections = {}
 if RunService.BindToRenderStep then
 	RunService:BindToRenderStep(RENDER_NAME, CONFIG.HEAD_RUN_PRIORITY, step)
 else
-	RunService.RenderStepped:Connect(step)
+	connections[#connections + 1] = RunService.RenderStepped:Connect(step)
+end
+
+--------------------------------------------------------------------
+-- Kill switch: fully unloads the script (unbind render step, drop
+-- drawings, disconnect inputs, clear the exported table)
+--------------------------------------------------------------------
+
+local function unload()
+	pcall(function()
+		if RunService.UnbindFromRenderStep then
+			RunService:UnbindFromRenderStep(RENDER_NAME)
+		end
+	end)
+	for _, c in ipairs(connections) do
+		pcall(function()
+			c:Disconnect()
+		end)
+	end
+	table.clear(connections)
+	for _, d in ipairs(drawings) do
+		pcall(function()
+			d.Visible = false
+			d:Remove()
+		end)
+	end
+	table.clear(drawings)
+	box, label, wm = nil, nil, nil
+	if getgenv then
+		getgenv().Aim = nil
+	end
+	print("[Aim] script killed — unhooked, drawings removed.")
 end
 
 --------------------------------------------------------------------
 -- Bind
 --------------------------------------------------------------------
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+connections[#connections + 1] = UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then
 		return
 	end
@@ -334,10 +407,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		print("[Aim] " .. (enabled and "ON" or "OFF")
 			.. (target and (" — target " .. target.Name .. " @ " .. math.floor(targetDist or 0)) or " — no target in range"))
 	elseif input.KeyCode == CONFIG.KILL_BIND then
-		burstUntil = tick() + CONFIG.KILL_BURST
-		enabled = true -- make sure we're aiming/clicking
-		print("[Aim] KILL burst " .. CONFIG.KILL_BURST .. "s on "
-			.. (target and target.Name or "nothing in range") .. " (clicks so far: " .. clickCount .. ")")
+		unload()
 	elseif input.KeyCode == CONFIG.SPEED_BIND then
 		speedOn = not speedOn
 		print("[Aim] speed boost " .. (speedOn and "ON (+" .. CONFIG.SPEED_BONUS .. " studs/s)" or "OFF"))
@@ -380,6 +450,6 @@ task.spawn(function()
 		.. "  parts: " .. tostring(model and #model:GetChildren() or 0))
 	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
 		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
-	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.KILL_BIND.Name
-		.. " kill burst | " .. CONFIG.SPEED_BIND.Name .. " speed boost")
+	print("[Aim] Ready — " .. CONFIG.BIND.Name .. " aim+click | " .. CONFIG.SPEED_BIND.Name
+		.. " speed boost | " .. CONFIG.KILL_BIND.Name .. " kill script")
 end)
