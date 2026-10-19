@@ -61,18 +61,17 @@ end
 
 local decompile
 do
-	local ok, res = pcall(function()
-		return loadstring(game:HttpGet(DECOMPILER_URL, true))()
+	-- the decompiler assigns a global `decompile` rather than returning one
+	local ok, err = pcall(function()
+		loadstring(game:HttpGet(DECOMPILER_URL, true))()
 	end)
-	if ok and res ~= nil then
-		decompile = _ENV.decompile
-		say("decompiler loaded")
-	else
-		say("decompiler FAILED to load: " .. tostring(res))
-	end
+	decompile = _ENV.decompile or (getgenv and getgenv().decompile) or decompile
 	if type(decompile) ~= "function" then
-		say("decompile() unavailable (getscriptbytecode=" .. tostring(type(getscriptbytecode) == "function") .. ")")
 		decompile = nil
+		say("decompiler unavailable: " .. tostring(err)
+			.. " (getscriptbytecode=" .. tostring(type(getscriptbytecode) == "function") .. ")")
+	else
+		say("decompiler loaded")
 	end
 end
 
