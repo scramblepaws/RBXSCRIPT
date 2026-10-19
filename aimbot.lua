@@ -12,7 +12,8 @@ local CONFIG = {
 	RANGE = 60, -- studs
 	INCLUDE_BOTS = true, -- `MCBody Bot####` models are valid targets
 	LOCAL_MODEL_NAME = "MCBody", -- your own avatar model (others are `MCBody <id>`)
-	HEAD_RUN_PRIORITY = Enum.RenderPriority.Character.Value + 1, -- run after the game's character step so ours wins
+	HEAD_RUN_PRIORITY = Enum.RenderPriority.Last.Value - 1, -- run after everything so the turn sticks
+	AIM_WHOLE_BODY = true, -- yaw the body too, not just the head
 	AUTO_CLICK = true, -- click at the target while aiming
 	CLICK_INTERVAL = 0.2, -- seconds between clicks
 	BOX_COLOR = Color3.fromRGB(255, 60, 60),
@@ -62,6 +63,26 @@ end
 
 local function localModel()
 	return Workspace:FindFirstChild(CONFIG.LOCAL_MODEL_NAME)
+end
+
+local ROOT_NAMES = { "Torso", "Root", "RootPart", "UpperTorso", "HumanoidRootPart", "Body", "Chest" }
+
+-- the part that carries the avatar's yaw (torso-ish), if any
+local function findRoot(model)
+	if not model then
+		return nil
+	end
+	local pp = model.PrimaryPart
+	if pp and pp:IsA("BasePart") then
+		return pp
+	end
+	for _, n in ipairs(ROOT_NAMES) do
+		local p = model:FindFirstChild(n)
+		if p and p:IsA("BasePart") then
+			return p
+		end
+	end
+	return nil
 end
 
 --------------------------------------------------------------------
@@ -119,6 +140,31 @@ local function AimAt(target)
 	return AimPart(findHead(localModel()), findHead(target))
 end
 
+-- Turn your whole avatar toward `targetHead`: head looks fully, body yaws (keeps it upright).
+local function AimModel(model, targetHead)
+	if not model or not targetHead or not targetHead.Parent then
+		return false
+	end
+	local did = false
+	local head = findHead(model)
+	if head and head.Parent then
+		head.CFrame = CFrame.lookAt(head.Position, targetHead.Position)
+		did = true
+	end
+	if CONFIG.AIM_WHOLE_BODY then
+		local root = findRoot(model)
+		if root and root.Parent and root ~= head then
+			local dir = targetHead.Position - root.Position
+			local flat = Vector3.new(dir.X, 0, dir.Z)
+			if flat.Magnitude > 0.01 then
+				root.CFrame = CFrame.lookAt(root.Position, root.Position + flat)
+				did = true
+			end
+		end
+	end
+	return did
+end
+
 --------------------------------------------------------------------
 -- Clicking (attack)
 --------------------------------------------------------------------
@@ -146,7 +192,7 @@ end
 
 -- exported for manual use
 if getgenv then
-	getgenv().Aim = { AimPart = AimPart, AimAt = AimAt, findTarget = findTarget, findHead = findHead, click = click }
+	getgenv().Aim = { AimPart = AimPart, AimAt = AimAt, AimModel = AimModel, findTarget = findTarget, findHead = findHead, findRoot = findRoot, click = click }
 end
 
 --------------------------------------------------------------------
@@ -197,7 +243,7 @@ local function step()
 	end
 
 	if enabled and targetHead then
-		AimPart(findHead(localModel()), targetHead)
+		AimModel(localModel(), targetHead)
 		if CONFIG.AUTO_CLICK and tick() - lastClick >= CONFIG.CLICK_INTERVAL then
 			lastClick = tick()
 			local cx, cy = (camera and camera.ViewportSize.X / 2) or 0, (camera and camera.ViewportSize.Y / 2) or 0
@@ -269,6 +315,17 @@ task.spawn(function()
 		end
 	end
 	print("[Aim][check] targets: " .. #names .. " (" .. table.concat(names, ", ") .. ")")
+	-- model anatomy, so we can see the real part names/positions
+	local parts, shown = {}, 0
+	for _, p in ipairs(model and model:GetDescendants() or {}) do
+		if p:IsA("BasePart") and shown < 12 then
+			shown = shown + 1
+			parts[#parts + 1] = p.Name .. "@" .. tostring(p.Position)
+		end
+	end
+	print("[Aim][check] parts: " .. (shown > 0 and table.concat(parts, " ") or "NONE"))
+	print("[Aim][check] root: " .. (findRoot(model) and findRoot(model).Name or "NOT FOUND")
+		.. "  primary: " .. (model and model.PrimaryPart and model.PrimaryPart.Name or "nil"))
 	print("[Aim][check] clicker: mouse1click=" .. tostring(type(mouse1click) == "function")
 		.. " mouse1press=" .. tostring(type(mouse1press) == "function") .. " vim=true")
 	print("[Aim] Ready — press " .. CONFIG.BIND.Name .. " to toggle aim+click.")
